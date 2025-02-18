@@ -19,7 +19,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
-from diffusers.loaders.single_file_model import FromOriginalModelMixin
+from diffusers.loaders import FromSingleFileMixin
+# from diffusers.loaders.single_file_model import FromOriginalModelMixin
 from diffusers.utils import BaseOutput, logging
 from diffusers.models.attention_processor import (
     ADDED_KV_ATTENTION_PROCESSORS,
@@ -137,7 +138,10 @@ class ControlNetConditioningEmbedding(nn.Module):
         )
 
     def forward(self, conditioning):
-        embedding = self.conv_in(conditioning)
+        import pdb; pdb.set_trace()
+        embedding = self.conv_in(conditioning) # ! BUG: the type of conditioning is not consistent with self.conv_in
+        # TODO: we need (Tensor input, Tensor weight, Tensor bias, tuple of ints stride, tuple of ints padding, tuple of ints dilation, int groups)
+        # now we have (int, Parameter, Parameter, tuple of (int, int), tuple of (int, int), tuple of (int, int), int)
         embedding = F.silu(embedding)
 
         for block in self.blocks:
@@ -149,7 +153,7 @@ class ControlNetConditioningEmbedding(nn.Module):
         return embedding
     
 
-class ControlNetModel_Union(ModelMixin, ConfigMixin, FromOriginalModelMixin):
+class ControlNetModel_Union(ModelMixin, ConfigMixin, FromSingleFileMixin):
     """
     A ControlNet model.
 
@@ -406,7 +410,7 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # Control Encoder to distinguish different control conditions
         # A simple but effective module, consists of an embedding layer and a linear layer, to inject the control info to time embedding.
         self.control_type_proj = Timesteps(addition_time_embed_dim, flip_sin_to_cos, freq_shift)
-        self.control_add_embedding = TimestepEmbedding(addition_time_embed_dim * num_control_type, time_embed_dim)
+        self.control_add_embedding = TimestepEmbedding(addition_time_embed_dim * num_control_type, time_embed_dim) #input dim: 4096
         #-----------------------------------------------------------------------------------------------------
 
         self.down_blocks = nn.ModuleList([])
@@ -793,7 +797,7 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             timesteps = timesteps[None].to(sample.device)
 
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        timesteps = timesteps.expand(sample.shape[0])
+        timesteps = timesteps.expand(sample.shape[0]) # BUG: sample.shape[0]=2 for inference
 
         t_emb = self.time_proj(timesteps)
 
@@ -830,10 +834,17 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                         f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `time_ids` to be passed in `added_cond_kwargs`"
                     )
                 time_ids = added_cond_kwargs.get("time_ids")
+                # import pdb; pdb.set_trace()
                 time_embeds = self.add_time_proj(time_ids.flatten())
-                time_embeds = time_embeds.reshape((text_embeds.shape[0], -1))
-
+                # import pdb; pdb.set_trace()
+                # modified to fit batch size > 1
+                if text_embeds.dim() == 3: 
+                    time_embeds = time_embeds.reshape((text_embeds.shape[0], text_embeds.shape[1], -1))
+                else: 
+                    time_embeds = time_embeds.reshape((text_embeds.shape[0], -1))
+                # import pdb; pdb.set_trace()
                 add_embeds = torch.concat([text_embeds, time_embeds], dim=-1)
+                # import pdb; pdb.set_trace()
                 add_embeds = add_embeds.to(emb.dtype)
                 aug_emb = self.add_embedding(add_embeds)
 
@@ -841,9 +852,12 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # inject control type info to time embedding to distinguish different control conditions
         control_type = added_cond_kwargs.get('control_type')
         control_embeds = self.control_type_proj(control_type.flatten())
-        control_embeds = control_embeds.reshape((t_emb.shape[0], -1))
+        # import pdb; pdb.set_trace()
+
+        control_embeds = control_embeds.reshape((t_emb.shape[0], -1)) # BUG: t_emb is always wrong, making the following unmatch in self.control_add_embedding
         control_embeds = control_embeds.to(emb.dtype)
-        control_emb = self.control_add_embedding(control_embeds)
+        # import pdb; pdb.set_trace()
+        control_emb = self.control_add_embedding(control_embeds) #BUG 
         emb = emb + control_emb
         #---------------------------------------------------------------------------------
 
@@ -858,12 +872,16 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         # Condition Transformer provides an easy and effective way to fuse different features naturally
         inputs = []
         condition_list = []
-
         for idx in range(indices.shape[0] + 1):
+            print(f'idx: {idx}, indices.shape[0]: {indices.shape[0]}')
+            # import pdb; pdb.set_trace()
+
             if idx == indices.shape[0]:
+                
                 controlnet_cond = sample
                 feat_seq = torch.mean(controlnet_cond, dim=(2, 3)) # N * C
             else:
+                # TODO: need to handle the empty conditionings, in our case (medical scenario), we only have the 7-th condition not None
                 controlnet_cond = self.controlnet_cond_embedding(controlnet_cond_list[indices[idx][0]])
                 feat_seq = torch.mean(controlnet_cond, dim=(2, 3)) # N * C
                 feat_seq = feat_seq + self.task_embedding[indices[idx][0]]

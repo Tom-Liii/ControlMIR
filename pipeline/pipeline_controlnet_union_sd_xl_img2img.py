@@ -63,6 +63,7 @@ if is_invisible_watermark_available():
     from diffusers.pipelines.stable_diffusion_xl.watermark import StableDiffusionXLWatermarker
 
 from diffusers.pipelines.controlnet.multicontrolnet import MultiControlNetModel
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -873,7 +874,9 @@ class StableDiffusionXLControlNetUnionImg2ImgPipeline(
         do_classifier_free_guidance=False,
         guess_mode=False,
     ):
+        # import pdb; pdb.set_trace()
         image = self.control_image_processor.preprocess(image, height=height, width=width).to(dtype=torch.float32)
+        # import pdb; pdb.set_trace()
         image_batch_size = image.shape[0]
 
         if image_batch_size == 1:
@@ -885,10 +888,9 @@ class StableDiffusionXLControlNetUnionImg2ImgPipeline(
         image = image.repeat_interleave(repeat_by, dim=0)
 
         image = image.to(device=device, dtype=dtype)
-
         if do_classifier_free_guidance and not guess_mode:
             image = torch.cat([image] * 2)
-
+        # import pdb; pdb.set_trace()
         return image
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.StableDiffusionImg2ImgPipeline.get_timesteps
@@ -1427,6 +1429,7 @@ class StableDiffusionXLControlNetUnionImg2ImgPipeline(
             generator,
             True,
         )
+        # import pdb; pdb.set_trace()
 
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -1471,13 +1474,13 @@ class StableDiffusionXLControlNetUnionImg2ImgPipeline(
             text_encoder_projection_dim=text_encoder_projection_dim,
         )
         add_time_ids = add_time_ids.repeat(batch_size * num_images_per_prompt, 1)
-
+        # import pdb; pdb.set_trace()
         if self.do_classifier_free_guidance:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
             add_text_embeds = torch.cat([negative_pooled_prompt_embeds, add_text_embeds], dim=0)
             add_neg_time_ids = add_neg_time_ids.repeat(batch_size * num_images_per_prompt, 1)
             add_time_ids = torch.cat([add_neg_time_ids, add_time_ids], dim=0)
-
+        # import pdb; pdb.set_trace()
         prompt_embeds = prompt_embeds.to(device)
         add_text_embeds = add_text_embeds.to(device)
         add_time_ids = add_time_ids.to(device)
@@ -1487,7 +1490,7 @@ class StableDiffusionXLControlNetUnionImg2ImgPipeline(
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # expand the latents if we are doing classifier free guidance
-                latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
+                latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents # why do_classifier free guidance need [latents] *2???
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
                 added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids, \
@@ -1497,8 +1500,11 @@ class StableDiffusionXLControlNetUnionImg2ImgPipeline(
                 if guess_mode and self.do_classifier_free_guidance:
                     # Infer ControlNet only for the conditional batch.
                     control_model_input = latents
+                    
                     control_model_input = self.scheduler.scale_model_input(control_model_input, t)
+                    
                     controlnet_prompt_embeds = prompt_embeds.chunk(2)[1]
+                    
                     controlnet_added_cond_kwargs = {
                         "text_embeds": add_text_embeds.chunk(2)[1],
                         "time_ids": add_time_ids.chunk(2)[1],
@@ -1515,7 +1521,7 @@ class StableDiffusionXLControlNetUnionImg2ImgPipeline(
                     if isinstance(controlnet_cond_scale, list):
                         controlnet_cond_scale = controlnet_cond_scale[0]
                     cond_scale = controlnet_cond_scale * controlnet_keep[i]
-
+                # import pdb; pdb.set_trace()
                 down_block_res_samples, mid_block_res_sample = self.controlnet(
                     control_model_input,
                     t,
