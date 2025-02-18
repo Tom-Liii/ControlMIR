@@ -11,7 +11,7 @@ CUDA_LAUNCH_BLOCKING=1 accelerate launch --config_file /home/heming/research/med
  --output_dir=$OUTPUT_DIR \
  --train_data_dir=$DATA_DIR \
  --mixed_precision="fp16" \
- --resolution=256 \
+ --resolution=1008 \
  --learning_rate=1e-5 \
  --max_train_steps=15000 \
  --validation_image "/home/heming/research/medical/ControlNetPlus/medical_data/LQ/IXI002-Guys-0828-T2_0.png" "/home/heming/research/medical/ControlNetPlus/medical_data/LQ/IXI002-Guys-0828-T2_1.png" \
