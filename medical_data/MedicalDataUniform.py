@@ -18,7 +18,7 @@ io=dataIO()
 transform = transformData()
 
 class Train_Data(Dataset):
-    def __init__(self, root_dir, modality_list = ["PET"], patch_size=128, medical_embeddings_path="/home/heming/research/medical/ControlNetPlus/medical_data/modality_embeddings.pt"):
+    def __init__(self, root_dir, modality_list = ["PET"], patch_size=128, medical_embeddings_path="/home/heming/research/medical/ControlNetPlus/medical_data/modality_embeddings.pt", resolution=1008):
         self.LQ_paths = [] 
         self.HQ_paths = [] 
         
@@ -55,10 +55,11 @@ class Train_Data(Dataset):
         # print(self.modality_embeddings)
         
         # Preprocessing transforms
+        self.target_resolution = resolution
         self.image_transforms = transforms.Compose(
             [
-                transforms.Resize(256, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(256),
+                transforms.Resize(self.target_resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(self.target_resolution),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
             ]
@@ -66,11 +67,12 @@ class Train_Data(Dataset):
 
         self.conditioning_image_transforms = transforms.Compose(
             [
-                transforms.Resize(256, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(256),
+                transforms.Resize(self.target_resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(self.target_resolution),
                 transforms.ToTensor(),
             ]
         )
+        
 
 
 
@@ -110,6 +112,9 @@ class Train_Data(Dataset):
         # Convert tensors to PIL images
         imgLQ = to_pil_image(imgLQ.squeeze(0)).convert("RGB")  # Convert LQ image
         imgHQ = to_pil_image(imgHQ.squeeze(0)).convert("RGB")  # Convert HQ image
+        
+        # imgLQ = imgLQ.resize((self.target_resolution, self.target_resolution))  # Resize LQ image
+        # imgHQ = imgHQ.resize((self.target_resolution, self.target_resolution))  # Resize HQ image
         
         if self.conditioning_image_transforms:
             conditioning_pixel_values = self.conditioning_image_transforms(imgLQ)  # Conditioning image

@@ -138,7 +138,7 @@ class ControlNetConditioningEmbedding(nn.Module):
         )
 
     def forward(self, conditioning):
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         embedding = self.conv_in(conditioning) # ! BUG: the type of conditioning is not consistent with self.conv_in
         # TODO: we need (Tensor input, Tensor weight, Tensor bias, tuple of ints stride, tuple of ints padding, tuple of ints dilation, int groups)
         # now we have (int, Parameter, Parameter, tuple of (int, int), tuple of (int, int), tuple of (int, int), int)
@@ -766,6 +766,7 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromSingleFileMixin):
                 If `return_dict` is `True`, a [`~models.controlnet.ControlNetOutput`] is returned, otherwise a tuple is
                 returned where the first element is the sample tensor.
         """
+        # import pdb; pdb.set_trace()
         # check channel order
         channel_order = self.config.controlnet_conditioning_channel_order
 
@@ -873,7 +874,7 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromSingleFileMixin):
         inputs = []
         condition_list = []
         for idx in range(indices.shape[0] + 1):
-            print(f'idx: {idx}, indices.shape[0]: {indices.shape[0]}')
+            # print(f'idx: {idx}, indices.shape[0]: {indices.shape[0]}')
             # import pdb; pdb.set_trace()
 
             if idx == indices.shape[0]:
@@ -903,8 +904,10 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromSingleFileMixin):
 
         # 3. down
         down_block_res_samples = (sample,)
+        emb = emb.squeeze(0)
         for downsample_block in self.down_blocks:
             if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
+                # import pdb; pdb.set_trace()
                 sample, res_samples = downsample_block(
                     hidden_states=sample,
                     temb=emb,
@@ -913,7 +916,8 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromSingleFileMixin):
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
             else:
-                sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
+                # import pdb; pdb.set_trace()
+                sample, res_samples = downsample_block(hidden_states=sample, temb=emb) # BUG
 
             down_block_res_samples += res_samples
 

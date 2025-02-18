@@ -1876,11 +1876,13 @@ def main(args):
                         "control_type": control_type
                     }
                     # import pdb; pdb.set_trace()
+                    hidden_states = batch["prompt_embeds"].to(accelerator.device).repeat(2, 1, 1, 1).squeeze(1)
+                    
                     # ! BUG: if cfg, repeat the controlnet_cond_list's image
                     down_block_res_samples, mid_block_res_sample = controlnet(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=batch["prompt_embeds"].to(accelerator.device),
+                    encoder_hidden_states=hidden_states,
                     added_cond_kwargs=controlnet_added_cond_kwargs,
                     controlnet_cond_list=control_image_list[0], # ! very possible bugs, TODO: conditioning image need many preprocessings; control_image_list[6].shape: torch.Size([2, 3, 1008, 1008]) may be have some processing 
                     return_dict=False,
