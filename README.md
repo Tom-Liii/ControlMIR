@@ -343,3 +343,6 @@ multiply it with a certain scale will affect a lot(but may be cause some unknown
 ```shell
 python controlnet_union_test_multi_control.py
 ```
+
+## Training Scripts for Medical Image Restoration
+- Currently I am working on the script ``
