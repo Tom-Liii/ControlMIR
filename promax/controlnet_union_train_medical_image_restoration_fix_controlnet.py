@@ -863,260 +863,7 @@ def collate_fn(examples):
         "unet_added_conditions": {"text_embeds": add_text_embeds, "time_ids": add_time_ids},
     }
 
-def check_inputs(
-    prompt,
-    prompt_2,
-    image,
-    strength,
-    num_inference_steps,
-    callback_steps,
-    negative_prompt=None,
-    negative_prompt_2=None,
-    prompt_embeds=None,
-    negative_prompt_embeds=None,
-    pooled_prompt_embeds=None,
-    negative_pooled_prompt_embeds=None,
-    ip_adapter_image=None,
-    ip_adapter_image_embeds=None,
-    controlnet_conditioning_scale=1.0,
-    control_guidance_start=0.0,
-    control_guidance_end=1.0,
-    callback_on_step_end_tensor_inputs=None,
-):
-    return
-    # TODO: deal with self. items
-    if strength < 0 or strength > 1:
-        raise ValueError(f"The value of strength should in [0.0, 1.0] but is {strength}")
-    if num_inference_steps is None:
-        raise ValueError("`num_inference_steps` cannot be None.")
-    elif not isinstance(num_inference_steps, int) or num_inference_steps <= 0:
-        raise ValueError(
-            f"`num_inference_steps` has to be a positive integer but is {num_inference_steps} of type"
-            f" {type(num_inference_steps)}."
-        )
 
-    if callback_steps is not None and (not isinstance(callback_steps, int) or callback_steps <= 0):
-        raise ValueError(
-            f"`callback_steps` has to be a positive integer but is {callback_steps} of type"
-            f" {type(callback_steps)}."
-        )
-
-    if callback_on_step_end_tensor_inputs is not None and not all(
-        k in self._callback_tensor_inputs for k in callback_on_step_end_tensor_inputs
-    ):
-        raise ValueError(
-            f"`callback_on_step_end_tensor_inputs` has to be in {self._callback_tensor_inputs}, but found {[k for k in callback_on_step_end_tensor_inputs if k not in self._callback_tensor_inputs]}"
-        )
-
-    if prompt is not None and prompt_embeds is not None:
-        raise ValueError(
-            f"Cannot forward both `prompt`: {prompt} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
-            " only forward one of the two."
-        )
-    elif prompt_2 is not None and prompt_embeds is not None:
-        raise ValueError(
-            f"Cannot forward both `prompt_2`: {prompt_2} and `prompt_embeds`: {prompt_embeds}. Please make sure to"
-            " only forward one of the two."
-        )
-    elif prompt is None and prompt_embeds is None:
-        raise ValueError(
-            "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
-        )
-    elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
-        raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
-    elif prompt_2 is not None and (not isinstance(prompt_2, str) and not isinstance(prompt_2, list)):
-        raise ValueError(f"`prompt_2` has to be of type `str` or `list` but is {type(prompt_2)}")
-
-    if negative_prompt is not None and negative_prompt_embeds is not None:
-        raise ValueError(
-            f"Cannot forward both `negative_prompt`: {negative_prompt} and `negative_prompt_embeds`:"
-            f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
-        )
-    elif negative_prompt_2 is not None and negative_prompt_embeds is not None:
-        raise ValueError(
-            f"Cannot forward both `negative_prompt_2`: {negative_prompt_2} and `negative_prompt_embeds`:"
-            f" {negative_prompt_embeds}. Please make sure to only forward one of the two."
-        )
-
-    if prompt_embeds is not None and negative_prompt_embeds is not None:
-        if prompt_embeds.shape != negative_prompt_embeds.shape:
-            raise ValueError(
-                "`prompt_embeds` and `negative_prompt_embeds` must have the same shape when passed directly, but"
-                f" got: `prompt_embeds` {prompt_embeds.shape} != `negative_prompt_embeds`"
-                f" {negative_prompt_embeds.shape}."
-            )
-
-    if prompt_embeds is not None and pooled_prompt_embeds is None:
-        raise ValueError(
-            "If `prompt_embeds` are provided, `pooled_prompt_embeds` also have to be passed. Make sure to generate `pooled_prompt_embeds` from the same text encoder that was used to generate `prompt_embeds`."
-        )
-
-    if negative_prompt_embeds is not None and negative_pooled_prompt_embeds is None:
-        raise ValueError(
-            "If `negative_prompt_embeds` are provided, `negative_pooled_prompt_embeds` also have to be passed. Make sure to generate `negative_pooled_prompt_embeds` from the same text encoder that was used to generate `negative_prompt_embeds`."
-        )
-
-    # `prompt` needs more sophisticated handling when there are multiple
-    # conditionings.
-    if isinstance(self.controlnet, MultiControlNetModel):
-        if isinstance(prompt, list):
-            logger.warning(
-                f"You have {len(self.controlnet.nets)} ControlNets and you have passed {len(prompt)}"
-                " prompts. The conditionings will be fixed across the prompts."
-            )
-
-    # Check `image`
-    is_compiled = hasattr(F, "scaled_dot_product_attention") and isinstance(
-        self.controlnet, torch._dynamo.eval_frame.OptimizedModule
-    )
-    if (
-        isinstance(self.controlnet, ControlNetModel)
-        or is_compiled
-        and isinstance(self.controlnet._orig_mod, ControlNetModel)
-    ):
-        self.check_image(image, prompt, prompt_embeds)
-    elif (
-        isinstance(self.controlnet, ControlNetModel_Union)
-        or is_compiled
-        and isinstance(self.controlnet._orig_mod, ControlNetModel_Union)
-    ):
-        self.check_image(image, prompt, prompt_embeds)
-    elif (
-        isinstance(self.controlnet, MultiControlNetModel)
-        or is_compiled
-        and isinstance(self.controlnet._orig_mod, MultiControlNetModel)
-    ):
-        if not isinstance(image, list):
-            raise TypeError("For multiple controlnets: `image` must be type `list`")
-
-        # When `image` is a nested list:
-        # (e.g. [[canny_image_1, pose_image_1], [canny_image_2, pose_image_2]])
-        elif any(isinstance(i, list) for i in image):
-            raise ValueError("A single batch of multiple conditionings are supported at the moment.")
-        elif len(image) != len(self.controlnet.nets):
-            raise ValueError(
-                f"For multiple controlnets: `image` must have the same length as the number of controlnets, but got {len(image)} images and {len(self.controlnet.nets)} ControlNets."
-            )
-
-        for image_ in image:
-            self.check_image(image_, prompt, prompt_embeds)
-    else:
-        assert False
-
-    # Check `controlnet_conditioning_scale`
-    if (
-        isinstance(self.controlnet, ControlNetModel)
-        or is_compiled
-        and isinstance(self.controlnet._orig_mod, ControlNetModel)
-    ):
-        if not isinstance(controlnet_conditioning_scale, float):
-            raise TypeError("For single controlnet: `controlnet_conditioning_scale` must be type `float`.")
-
-    elif (
-        isinstance(self.controlnet, ControlNetModel_Union)
-        or is_compiled
-        and isinstance(self.controlnet._orig_mod, ControlNetModel_Union)
-    ):
-        if not isinstance(controlnet_conditioning_scale, float):
-            raise TypeError("For single controlnet: `controlnet_conditioning_scale` must be type `float`.")
-
-    elif (
-        isinstance(self.controlnet, MultiControlNetModel)
-        or is_compiled
-        and isinstance(self.controlnet._orig_mod, MultiControlNetModel)
-    ):
-        if isinstance(controlnet_conditioning_scale, list):
-            if any(isinstance(i, list) for i in controlnet_conditioning_scale):
-                raise ValueError("A single batch of multiple conditionings are supported at the moment.")
-        elif isinstance(controlnet_conditioning_scale, list) and len(controlnet_conditioning_scale) != len(
-            self.controlnet.nets
-        ):
-            raise ValueError(
-                "For multiple controlnets: When `controlnet_conditioning_scale` is specified as `list`, it must have"
-                " the same length as the number of controlnets"
-            )
-    else:
-        assert False
-
-    if not isinstance(control_guidance_start, (tuple, list)):
-        control_guidance_start = [control_guidance_start]
-
-    if not isinstance(control_guidance_end, (tuple, list)):
-        control_guidance_end = [control_guidance_end]
-
-    if len(control_guidance_start) != len(control_guidance_end):
-        raise ValueError(
-            f"`control_guidance_start` has {len(control_guidance_start)} elements, but `control_guidance_end` has {len(control_guidance_end)} elements. Make sure to provide the same number of elements to each list."
-        )
-
-    if isinstance(self.controlnet, MultiControlNetModel):
-        if len(control_guidance_start) != len(self.controlnet.nets):
-            raise ValueError(
-                f"`control_guidance_start`: {control_guidance_start} has {len(control_guidance_start)} elements but there are {len(self.controlnet.nets)} controlnets available. Make sure to provide {len(self.controlnet.nets)}."
-            )
-
-    for start, end in zip(control_guidance_start, control_guidance_end):
-        if start >= end:
-            raise ValueError(
-                f"control guidance start: {start} cannot be larger or equal to control guidance end: {end}."
-            )
-        if start < 0.0:
-            raise ValueError(f"control guidance start: {start} can't be smaller than 0.")
-        if end > 1.0:
-            raise ValueError(f"control guidance end: {end} can't be larger than 1.0.")
-
-    if ip_adapter_image is not None and ip_adapter_image_embeds is not None:
-        raise ValueError(
-            "Provide either `ip_adapter_image` or `ip_adapter_image_embeds`. Cannot leave both `ip_adapter_image` and `ip_adapter_image_embeds` defined."
-        )
-
-    if ip_adapter_image_embeds is not None:
-        if not isinstance(ip_adapter_image_embeds, list):
-            raise ValueError(
-                f"`ip_adapter_image_embeds` has to be of type `list` but is {type(ip_adapter_image_embeds)}"
-            )
-        elif ip_adapter_image_embeds[0].ndim not in [3, 4]:
-            raise ValueError(
-                f"`ip_adapter_image_embeds` has to be a list of 3D or 4D tensors but is {ip_adapter_image_embeds[0].ndim}D"
-            )
-    pass
-
-def check_image(image, prompt, prompt_embeds):
-    image_is_pil = isinstance(image, PIL.Image.Image)
-    image_is_tensor = isinstance(image, torch.Tensor)
-    image_is_np = isinstance(image, np.ndarray)
-    image_is_pil_list = isinstance(image, list) and isinstance(image[0], PIL.Image.Image)
-    image_is_tensor_list = isinstance(image, list) and isinstance(image[0], torch.Tensor)
-    image_is_np_list = isinstance(image, list) and isinstance(image[0], np.ndarray)
-
-    if (
-        not image_is_pil
-        and not image_is_tensor
-        and not image_is_np
-        and not image_is_pil_list
-        and not image_is_tensor_list
-        and not image_is_np_list
-    ):
-        raise TypeError(
-            f"image must be passed and be one of PIL image, numpy array, torch tensor, list of PIL images, list of numpy arrays or list of torch tensors, but is {type(image)}"
-        )
-
-    if image_is_pil:
-        image_batch_size = 1
-    else:
-        image_batch_size = len(image)
-
-    if prompt is not None and isinstance(prompt, str):
-        prompt_batch_size = 1
-    elif prompt is not None and isinstance(prompt, list):
-        prompt_batch_size = len(prompt)
-    elif prompt_embeds is not None:
-        prompt_batch_size = prompt_embeds.shape[0]
-
-    if image_batch_size != 1 and image_batch_size != prompt_batch_size:
-        raise ValueError(
-            f"If image batch size is not 1, image batch size must be same as prompt batch size. image batch size: {image_batch_size}, prompt batch size: {prompt_batch_size}"
-        )
             
 def prepare_control_image(
     image,
@@ -1150,103 +897,6 @@ def prepare_control_image(
     # import pdb; pdb.set_trace()
     return image
 
-# Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
-def retrieve_latents(
-    encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
-):
-    if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
-        return encoder_output.latent_dist.sample(generator)
-    elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
-        return encoder_output.latent_dist.mode()
-    elif hasattr(encoder_output, "latents"):
-        return encoder_output.latents
-    else:
-        raise AttributeError("Could not access latents of provided encoder_output")
-
-
-def prepare_latents(
-    vae, 
-    scheduler, 
-    image, 
-    timestep, 
-    dtype, 
-    device, 
-    batch_size=1,
-    num_images_per_prompt=1, 
-    generator=None, 
-    add_noise=True
-):
-    if not isinstance(image, (torch.Tensor, PIL.Image.Image, list)):
-        raise ValueError(
-            f"`image` has to be of type `torch.Tensor`, `PIL.Image.Image` or list but is {type(image)}"
-        )
-
-    # Offload text encoder if `enable_model_cpu_offload` was enabled
-    # Offloading to CPU
-    # if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
-    #     self.text_encoder_2.to("cpu")
-    #     torch.cuda.empty_cache()
-
-    # Device and Data Type Preparation
-    image = image.to(device=device, dtype=dtype)
-
-    batch_size = batch_size * num_images_per_prompt
-
-    # Latent Preparation
-    # case 1: if already in latent format
-    if image.shape[1] == 4:
-        init_latents = image
-    # case 2: VAE encoding
-    else:
-        # make sure the VAE is in float32 mode, as it overflows in float16
-        if vae.config.force_upcast:
-            image = image.float()
-            vae.to(dtype=torch.float32)
-        # Handling generator for VAE: list or not list
-        if isinstance(generator, list) and len(generator) != batch_size:
-            raise ValueError(
-                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
-                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
-            )
-
-        elif isinstance(generator, list):
-            init_latents = [
-                retrieve_latents(vae.encode(image[i : i + 1]), generator=generator[i])
-                for i in range(batch_size)
-            ]
-            init_latents = torch.cat(init_latents, dim=0)
-        else:
-            init_latents = retrieve_latents(vae.encode(image), generator=generator)
-        
-        # Scaling and Conversion:
-        if vae.config.force_upcast:
-            vae.to(dtype)
-
-        init_latents = init_latents.to(dtype)
-        init_latents = vae.config.scaling_factor * init_latents
-
-    # Batch Duplication
-    if batch_size > init_latents.shape[0] and batch_size % init_latents.shape[0] == 0:
-        # expand init_latents for batch_size
-        additional_image_per_prompt = batch_size // init_latents.shape[0]
-        init_latents = torch.cat([init_latents] * additional_image_per_prompt, dim=0)
-    elif batch_size > init_latents.shape[0] and batch_size % init_latents.shape[0] != 0:
-        raise ValueError(
-            f"Cannot duplicate `image` of batch size {init_latents.shape[0]} to {batch_size} text prompts."
-        )
-    else:
-        init_latents = torch.cat([init_latents], dim=0)
-
-    # Adding Noise
-    if add_noise:
-        shape = init_latents.shape
-        noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-        # get latents
-        init_latents = scheduler.add_noise(init_latents, noise, timestep)
-
-    latents = init_latents
-
-    return latents
 
 def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
@@ -1358,6 +1008,7 @@ def main(args):
     
 
     if args.controlnet_model_name_or_path:
+        # TODO: need to initialize a new ControlNetModel_Union instance
         logger.info("Loading existing controlnet weights")
         controlnet = ControlNetModel_Union.from_pretrained(
             args.controlnet_model_name_or_path, use_safetensors=True
@@ -1487,6 +1138,7 @@ def main(args):
     text_encoder_one.requires_grad_(False)
     text_encoder_two.requires_grad_(False)
     controlnet.eval()
+    unet.train()
 
     if args.enable_npu_flash_attention:
         if is_torch_npu_available():
@@ -1571,7 +1223,7 @@ def main(args):
         vae.to(accelerator.device, dtype=weight_dtype)
     else:
         vae.to(accelerator.device, dtype=torch.float32)
-    unet.to(accelerator.device, dtype=weight_dtype)
+    unet.to(accelerator.device, dtype=torch.float32)
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
 
@@ -1824,21 +1476,6 @@ def main(args):
                     pixel_values = batch["pixel_values"].to(device=accelerator.device, dtype=weight_dtype)
                 else:
                     pixel_values = batch["pixel_values"].to(accelerator.device)
-                # import pdb; pdb.set_trace()
-                
-                # latents = prepare_latents(
-                #     vae, 
-                #     scheduler, 
-                #     image, 
-                #     timestep, 
-                #     dtype, 
-                #     device, 
-                #     batch_size=1,
-                #     num_images_per_prompt=1, 
-                #     generator=None, 
-                #     add_noise=True
-                # )
-                
                 # hq_image = batch["conditioning_pixel_values"].to(device=accelerator.device, dtype=weight_dtype)
                 # import pdb; pdb.set_trace()
                 # latents = vae.encode(pixel_values.float()).latent_dist.sample()
@@ -1849,7 +1486,7 @@ def main(args):
                     latents = latents.to(weight_dtype)
 
                 # Sample noise that we'll add to the latents
-                noise = torch.randn_like(latents)
+                noise = torch.randn_like(torch.cat([latents] * 2))
                 bsz = latents.shape[0]
 
                 # Sample a random timestep for each image
@@ -1859,7 +1496,7 @@ def main(args):
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 # ? latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents # why do_classifier free guidance need [latents] *2???
-                latent_model_input = torch.cat([latents] * 2) if True else latents # dont know why need to multiply by 2!
+                latent_model_input = torch.cat([latents] * 2) if True else latents # dont know why need to multiply by 2! [resolved]
                 noisy_latents = noise_scheduler.add_noise(latent_model_input.float(), noise.float(), timesteps).to(
                     dtype=weight_dtype
                 )
@@ -1875,6 +1512,7 @@ def main(args):
                 
                 
                 if args.controlnet_model_name_or_path is not None: # using controlnetplus, hence change controlnet_cond to controlnet_cond_list
+                    # will enter this if whening training our controlnet for medical image restoration
                     union_control_type=torch.Tensor([0, 0, 0, 0, 0, 0, 1, 0]) # control type for super resolution
                     text_embeds = batch["unet_added_conditions"]["text_embeds"]
                     time_ids = batch["unet_added_conditions"]["time_ids"]
@@ -1888,7 +1526,7 @@ def main(args):
                         "control_type": control_type.squeeze(0)
                     }
                     # import pdb; pdb.set_trace()
-                    hidden_states = batch["prompt_embeds"].to(accelerator.device).repeat(2, 1, 1, 1).squeeze(1)
+                    hidden_states = batch["prompt_embeds"].to(accelerator.device).repeat(2, 1, 1, 1).squeeze(1).float()
                     
                     # ! BUG: if cfg, repeat the controlnet_cond_list's image
                     down_block_res_samples, mid_block_res_sample = controlnet(
@@ -1904,9 +1542,9 @@ def main(args):
                     text_embeds = batch["unet_added_conditions"]["text_embeds"]
                     time_ids = batch["unet_added_conditions"]["time_ids"]
                     controlnet_added_cond_kwargs = {
-                        "text_embeds": torch.cat([text_embeds, -text_embeds], dim=1),
-                        "time_ids": torch.cat([time_ids, -time_ids], dim=1),
-                        "control_type":union_control_type.reshape(1, -1).to(accelerator.device, dtype=batch["prompt_embeds"].dtype).repeat(args.train_batch_size * 2, 1)
+                        "text_embeds": torch.cat([text_embeds, -text_embeds], dim=1).float(),
+                        "time_ids": torch.cat([time_ids, -time_ids], dim=1).float(),
+                        "control_type":union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size * 2, 1)
                     }
                     down_block_res_samples, mid_block_res_sample = controlnet(
                         noisy_latents,
@@ -1926,9 +1564,9 @@ def main(args):
                 #     }
                 # import pdb; pdb.set_trace()
                 model_pred = unet(
-                    noisy_latents,
-                    timesteps.squeeze(0),
-                    encoder_hidden_states=hidden_states.to(accelerator.device),
+                    noisy_latents.float(),
+                    timesteps.squeeze(0).float(),
+                    encoder_hidden_states=hidden_states.to(accelerator.device).float(),
                     added_cond_kwargs=controlnet_added_cond_kwargs,
                     down_block_additional_residuals=down_block_res_samples,
                     mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
@@ -1942,6 +1580,7 @@ def main(args):
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+                import pdb; pdb.set_trace()
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
                 accelerator.backward(loss)

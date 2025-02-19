@@ -923,6 +923,7 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromSingleFileMixin):
 
         # 4. mid
         if self.mid_block is not None:
+            # import pdb; pdb.set_trace()
             sample = self.mid_block(
                 sample,
                 emb,
