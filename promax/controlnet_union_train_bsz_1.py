@@ -1420,7 +1420,7 @@ def main(args):
                                                 num_images_per_prompt=1,
                                                 device=accelerator.device,
                                                 dtype=torch.float32,
-                                                do_classifier_free_guidance=True,
+                                                do_classifier_free_guidance=False,
                                                 guess_mode=False,
                                             )
                             height, width = control_image.shape[-2:]
@@ -1440,7 +1440,7 @@ def main(args):
                     latents = latents.to(weight_dtype)
 
                 # Sample noise that we'll add to the latents
-                noise = torch.randn_like(torch.cat([latents] * 2))
+                noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
 
                 # Sample a random timestep for each image
@@ -1450,7 +1450,7 @@ def main(args):
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 # ? latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents # why do_classifier free guidance need [latents] *2???
-                latent_model_input = torch.cat([latents] * 2) if True else latents # dont know why need to multiply by 2! [resolved]
+                latent_model_input = latents # dont know why need to multiply by 2! [resolved]
                 noisy_latents = noise_scheduler.add_noise(latent_model_input.float(), noise.float(), timesteps).to(
                     dtype=torch.float32
                 )
@@ -1471,20 +1471,19 @@ def main(args):
                     text_embeds = batch["unet_added_conditions"]["text_embeds"]
                     time_ids = batch["unet_added_conditions"]["time_ids"]
                     # control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=batch["prompt_embeds"].dtype).repeat(args.train_batch_size * 1 * 2, 1)
-                    control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(2, 1)
+                    control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(1, 1)
                     # control_type = control_type.unsqueeze(0).repeat(args.train_batch_size, 1, 1)
                     
                     controlnet_added_cond_kwargs = {
-                        "text_embeds": torch.cat([text_embeds, -text_embeds], dim=1).squeeze(0).to(torch.float32),
-                        "time_ids": torch.cat([time_ids, -time_ids], dim=1).squeeze(0).to(torch.float32),
-                        "control_type": control_type.squeeze(0)
+                        "text_embeds": text_embeds.to(torch.float32),
+                        "time_ids": time_ids.to(torch.float32),
+                        "control_type": control_type
                     }
                     # import pdb; pdb.set_trace()
-                    hidden_states = batch["prompt_embeds"].to(accelerator.device).repeat(2, 1, 1, 1).squeeze(1).float()
+                    hidden_states = batch["prompt_embeds"].to(accelerator.device).repeat(1, 1, 1, 1).squeeze(1).float()
                     
                     # ! BUG: if cfg, repeat the controlnet_cond_list's image [resolved]
-                    # Check dtype of ControlNet's parameters        
-                    import pdb; pdb.set_trace()            
+                    # Check dtype of ControlNet's parameters      
                     down_block_res_samples, mid_block_res_sample = controlnet(
                         noisy_latents,
                         timesteps.squeeze(0).float(),
@@ -1518,15 +1517,16 @@ def main(args):
                 #         "time_ids": torch.cat([time_ids, -time_ids], dim=1).squeeze(0).to(dtype=torch.float32).to(accelerator.device),
                 #         "control_type": control_type.squeeze(0).to(dtype=torch.float32).to(accelerator.device)
                 #     }
-                import pdb; pdb.set_trace()
+                added_cond_kwargs = {
+                        "text_embeds": text_embeds.squeeze(0).to(torch.float16),
+                        "time_ids": time_ids.squeeze(0).to(torch.float16),
+                        "control_type": control_type
+                    }
                 model_pred = unet(
                     noisy_latents.to(accelerator.device, dtype=weight_dtype),
                     timesteps.squeeze(0).to(accelerator.device, dtype=weight_dtype),
                     encoder_hidden_states=hidden_states.to(accelerator.device, dtype=weight_dtype),
-                    added_cond_kwargs={
-                        k: v.to(accelerator.device, dtype=weight_dtype)
-                        for k, v in controlnet_added_cond_kwargs.items()
-                    },
+                    added_cond_kwargs=added_cond_kwargs,
                     down_block_additional_residuals=[
                         res.to(accelerator.device, dtype=weight_dtype)
                         for res in down_block_res_samples
