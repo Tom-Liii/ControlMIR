@@ -1013,89 +1013,45 @@ def main(args):
         controlnet = ControlNetModel_Union.from_pretrained(
             args.controlnet_model_name_or_path, use_safetensors=True
         )
-        controlnet.requires_grad_(False)
-        # controlnet = ControlNetModel_Union(
-        #                 act_fn="silu",
-        #                 addition_embed_type="text_time",
-        #                 addition_embed_type_num_heads=64,
-        #                 addition_time_embed_dim=256,
-        #                 attention_head_dim=[5, 10, 20],
-        #                 block_out_channels=[320, 640, 1280],
-        #                 class_embed_type=None,
-        #                 conditioning_channels=3,
-        #                 conditioning_embedding_out_channels=[16, 32, 96, 256],
-        #                 controlnet_conditioning_channel_order="rgb",
-        #                 cross_attention_dim=2048,
-        #                 down_block_types=[
-        #                     "DownBlock2D",
-        #                     "CrossAttnDownBlock2D",
-        #                     "CrossAttnDownBlock2D"
-        #                 ],
-        #                 downsample_padding=1,
-        #                 encoder_hid_dim=None,
-        #                 encoder_hid_dim_type=None,
-        #                 flip_sin_to_cos=True,
-        #                 freq_shift=0,
-        #                 global_pool_conditions=False,
-        #                 in_channels=4,
-        #                 layers_per_block=2,
-        #                 mid_block_scale_factor=1,
-        #                 norm_eps=1e-05,
-        #                 norm_num_groups=32,
-        #                 num_attention_heads=None,
-        #                 num_class_embeds=None,
-        #                 only_cross_attention=False,
-        #                 projection_class_embeddings_input_dim=2816,
-        #                 resnet_time_scale_shift="default",
-        #                 transformer_layers_per_block=[1, 2, 10],
-        #                 upcast_attention=None,
-        #                 use_linear_projection=True,
-        #                 num_control_type=1
-        #             )
-        # controlnet = ControlNetModel_Union(
-        #                 act_fn= "silu",
-        #                 addition_embed_type= "text_time"
-        #                 addition_embed_type_num_heads= 64
-        #                 addition_time_embed_dim= 256
-        #                 attention_head_dim= [5, 10, 20])
-        #                 block_out_channels= [320, 640, 1280]
-        #                 class_embed_type: None
-        #                 conditioning_channels: int = 3
-        #                 conditioning_embedding_out_channels: List[int] = field(default_factory=lambda: [16, 32, 96, 256])
-        #                 controlnet_conditioning_channel_order: str = "rgb"
-        #                 cross_attention_dim: int = 2048
-        #                 down_block_types = [
-        #                     "DownBlock2D",
-        #                     "CrossAttnDownBlock2D",
-        #                     "CrossAttnDownBlock2D"
-        #                 ])
-        #                 downsample_padding: int = 1
-        #                 encoder_hid_dim: Optional[int] = None
-        #                 encoder_hid_dim_type: Optional[str] = None
-        #                 flip_sin_to_cos: bool = True
-        #                 freq_shift: int = 0
-        #                 global_pool_conditions: bool = False
-        #                 in_channels: int = 4
-        #                 layers_per_block: int = 2
-        #                 mid_block_scale_factor: int = 1
-        #                 norm_eps: float = 1e-05
-        #                 norm_num_groups: int = 32
-        #                 num_attention_heads: Optional[int] = None
-        #                 num_class_embeds: Optional[int] = None
-        #                 only_cross_attention: bool = False
-        #                 projection_class_embeddings_input_dim: int = 2816
-        #                 resnet_time_scale_shift: str = "default"
-        #                 transformer_layers_per_block: List[int] = field(default_factory=lambda: [1, 2, 10])
-        #                 upcast_attention: Optional[bool] = None
-        #                 use_linear_projection: bool = True
-        #                 num_control_type: int = 8
-        #                         num_control_type=1
-        #                     )  
-                        #.from_pretrained(args.controlnet_model_name_or_path, use_safetensors=True)
-                        # controlnet = ControlNetModel.from_pretrained(args.controlnet_model_name_or_path)
     else:
-        logger.info("Initializing controlnet weights from unet")
-        controlnet = ControlNetModel.from_unet(unet)
+        # logger.info("Initializing controlnet weights from unet")
+        logger.info("Initializing controlnet weights from scratch")
+
+        controlnet = ControlNetModel_Union(
+            in_channels=4,
+            conditioning_channels=3,
+            flip_sin_to_cos=True,
+            freq_shift=0,
+            down_block_types=("DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"),
+            only_cross_attention=False,
+            block_out_channels=(320, 640, 1280),
+            layers_per_block=2,
+            downsample_padding=1,
+            mid_block_scale_factor=1,
+            act_fn="silu",
+            norm_num_groups=32,
+            norm_eps=1e-5,
+            cross_attention_dim=2048,  # Matches SDXL's text encoder dim
+            transformer_layers_per_block=(1, 2, 10),  # Tuple-ized from list
+            encoder_hid_dim=None,
+            encoder_hid_dim_type=None,
+            attention_head_dim=(5, 10, 20),  # Tuple-ized from list
+            use_linear_projection=True,
+            class_embed_type=None,
+            addition_embed_type="text_time",
+            addition_time_embed_dim=256,
+            num_class_embeds=None,
+            upcast_attention=False,  # Default to False since config has null
+            resnet_time_scale_shift="default",
+            projection_class_embeddings_input_dim=2816,
+            controlnet_conditioning_channel_order="rgb",
+            conditioning_embedding_out_channels=(16, 32, 96, 256),
+            global_pool_conditions=False,
+            addition_embed_type_num_heads=64,
+            num_control_type=8  # Custom control types
+        )
+
+        controlnet.requires_grad_(True)
 
     def unwrap_model(model):
         model = accelerator.unwrap_model(model)
@@ -1134,11 +1090,10 @@ def main(args):
         accelerator.register_load_state_pre_hook(load_model_hook)
 
     vae.requires_grad_(False)
-    unet.requires_grad_(True)
+    unet.requires_grad_(False)
     text_encoder_one.requires_grad_(False)
     text_encoder_two.requires_grad_(False)
-    controlnet.eval()
-    unet.train()
+    controlnet.train()
 
     if args.enable_npu_flash_attention:
         if is_torch_npu_available():
@@ -1223,9 +1178,10 @@ def main(args):
         vae.to(accelerator.device, dtype=weight_dtype)
     else:
         vae.to(accelerator.device, dtype=torch.float32)
-    unet.to(accelerator.device, dtype=torch.float32)
+    unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
+    controlnet.to(accelerator.device, dtype=torch.float32)
 
     # Here, we compute not just the text embeddings but also the additional embeddings
     # needed for the SD XL UNet to operate.
@@ -1511,7 +1467,7 @@ def main(args):
                 # print(f'time_embeds: {batch["unet_added_conditions"]["time_ids"]}')
                 
                 
-                if args.controlnet_model_name_or_path is not None: # using controlnetplus, hence change controlnet_cond to controlnet_cond_list
+                if True: # using controlnetplus, hence change controlnet_cond to controlnet_cond_list
                     # will enter this if whening training our controlnet for medical image restoration
                     union_control_type=torch.Tensor([0, 0, 0, 0, 0, 0, 1, 0]) # control type for super resolution
                     text_embeds = batch["unet_added_conditions"]["text_embeds"]
@@ -1528,7 +1484,8 @@ def main(args):
                     # import pdb; pdb.set_trace()
                     hidden_states = batch["prompt_embeds"].to(accelerator.device).repeat(2, 1, 1, 1).squeeze(1).float()
                     
-                    # ! BUG: if cfg, repeat the controlnet_cond_list's image
+                    # ! BUG: if cfg, repeat the controlnet_cond_list's image [resolved]
+                    import pdb; pdb.set_trace()
                     down_block_res_samples, mid_block_res_sample = controlnet(
                     noisy_latents,
                     timesteps,

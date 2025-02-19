@@ -345,4 +345,12 @@ python controlnet_union_test_multi_control.py
 ```
 
 ## Training Scripts for Medical Image Restoration
-- Currently I am working on the script ``
+### Adaption to Medical Image
+- Data preparation: `medical_data/MedicalDataUniform.py`
+- Currently I am working on the script `promax/controlnet_union_train_medical_image_restoration_from_scratch.py` to 
+### Running
+- You can run the training script by: 
+```shell
+chmod +x ./promax/run_MIR.sh # make the shell script executable
+./run_MIR.sh # run the training script with certain arguments
+```
