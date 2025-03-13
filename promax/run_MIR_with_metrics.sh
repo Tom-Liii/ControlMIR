@@ -5,12 +5,12 @@ export HF_ENDPOINT=https://hf-mirror.com
 export VAE_DIR="madebyollin/sdxl-vae-fp16-fix"
 
 # CUDA_LAUNCH_BLOCKING=1 accelerate launch --config_file /home/heming/research/medical/ControlNetPlus/accelarate_config/med.yaml /home/heming/research/medical/ControlNetPlus/promax/controlnet_union_train_medical_image_restoration.py \
-CUDA_LAUNCH_BLOCKING=1 accelerate launch --config_file /home/heming/research/medical/ControlNetPlus/accelarate_config/med.yaml /home/heming/research/medical/ControlNetPlus/promax/process_conditioning.py \
+CUDA_LAUNCH_BLOCKING=1 accelerate launch --config_file /home/heming/research/medical/ControlNetPlus/accelarate_config/med2.yaml /home/heming/research/medical/ControlNetPlus/promax/controlnet_union_train_with_metrics.py \
  --pretrained_model_name_or_path "/home/heming/research/medical/ControlNetPlus/SSD-1B/models--segmind--SSD-1B/snapshots/60987f37e94cd59c36b1cba832b9f97b57395a10" \
  --output_dir=$OUTPUT_DIR \
  --train_data_dir=$DATA_DIR \
  --mixed_precision="fp16" \
- --resolution=128 \
+ --resolution=16 \
  --learning_rate=1e-5 \
  --max_train_steps=15000 \
  --validation_image "/home/heming/research/medical/ControlNetPlus/medical_data/LQ/IXI002-Guys-0828-T2_0.png" "/home/heming/research/medical/ControlNetPlus/medical_data/LQ/IXI002-Guys-0828-T2_1.png" \
