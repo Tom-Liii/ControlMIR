@@ -67,9 +67,11 @@ import sys
 import os
 
 # Add the path to the medical_data directory
-custom_module_path = os.path.abspath("/home/heming/research/medical/ControlNetPlus")
+custom_module_path = os.path.abspath("/hpc2hdd/home/sfei285/Project/heming/ControlMIR")
 if custom_module_path not in sys.path:
     sys.path.append(custom_module_path)
+    
+from diffusers import EulerAncestralDiscreteScheduler
 
 # Now you can import the module
 from medical_data.MedicalDataUniform import Train_Data, Test_Data, DataSampler  # Replace with the class or function you need
@@ -96,16 +98,22 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
     logger.info("Running validation... ")
     # validation image is LQ image
     # TODO: turn the validation image and hq image into PIL image
+    # TODO: turn the validation image and hq image into PIL image
     if not is_final_validation:
         controlnet = accelerator.unwrap_model(controlnet)
-        pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
+        # controlnetplus' pipeline
+        eulera_scheduler = EulerAncestralDiscreteScheduler.from_pretrained(
+                            args.pretrained_model_name_or_path, 
+                            subfolder="scheduler",
+                            resume_download=True,
+                            max_retries=5
+                            )
+        pipeline = StableDiffusionXLControlNetUnionImg2ImgPipeline.from_pretrained(
+            args.pretrained_model_name_or_path, controlnet=controlnet, 
             vae=vae,
-            unet=unet,
-            controlnet=controlnet,
-            revision=args.revision,
-            variant=args.variant,
-            torch_dtype=weight_dtype,
+            torch_dtype=torch.float16,
+            # scheduler=ddim_scheduler,
+            scheduler=eulera_scheduler,
         )
     else:
         controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
@@ -124,10 +132,16 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
             variant=args.variant,
             torch_dtype=weight_dtype,
         )
+        
 
     pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
+    
+    transform_totensor = transforms.Compose([
+        transforms.Grayscale(num_output_channels=1),
+        transforms.ToTensor()  # Converts to [C, H, W] and scales to [0.0, 1.0]
+    ])
 
     if args.enable_xformers_memory_efficient_attention:
         pipeline.enable_xformers_memory_efficient_attention()
@@ -161,8 +175,15 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
         autocast_ctx = torch.autocast(accelerator.device.type)
 
     for validation_prompt, validation_image, hq_image in zip(validation_prompts, validation_images, hq_images):
+        # validation_image is lq_image
         validation_image = Image.open(validation_image).convert("RGB")
+        # validation_image = to_pil_image(validation_image)
         validation_image = validation_image.resize((args.resolution, args.resolution))
+        
+        hq_image = Image.open(hq_image).convert("RGB")
+        # hq_image = to_pil_image(hq_image)
+        hq_image = hq_image.resize((args.resolution, args.resolution))
+        # import pdb; pdb.set_trace()
 
         images = []
         ssims = []
@@ -170,11 +191,25 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
         rmses = []
         for _ in range(args.num_validation_images):
             with autocast_ctx:
-                image = pipeline(
-                    prompt=validation_prompt, image=validation_image, num_inference_steps=20, generator=generator
+                # image = pipeline(
+                #     prompt=validation_prompt, image=validation_image, num_inference_steps=20, generator=generator
+                # ).images[0]
+                image = pipeline(prompt=[validation_prompt]*1,
+                    image=validation_image, 
+                    control_image_list=[0, 0, 0, 0, 0, 0, validation_image, 0],
+                    negative_prompt=['bad anatomy, extra digit, fewer digits, cropped, worst quality, low quality']*1,
+                    generator=generator,
+                    width=args.resolution, 
+                    height=args.resolution,
+                    num_inference_steps=30,
+                    # crops_coords_top_left=(W, H),
+                    # target_size=(W, H),
+                    # original_size=(W * 2, H * 2),
+                    union_control=True,
+                    union_control_type=torch.Tensor([0, 0, 0, 0, 0, 0, 1, 0]),
                 ).images[0]
             images.append(image)
-            psnr, ssim, rmse = compute_measure(hq_image, image, data_range=1.0)
+            psnr, ssim, rmse = compute_measure(transform_totensor(hq_image), transform_totensor(image), data_range=1.0)
             ssims.append(ssim)
             psnrs.append(psnr)
             rmses.append(rmse)
@@ -186,9 +221,9 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
             for log in image_logs:
-                images = log["images"]
+                images = log["sr_image"]
                 validation_prompt = log["validation_prompt"]
-                validation_image = log["validation_image"]
+                validation_image = log["lq_image"]
 
                 formatted_images = []
 
@@ -204,9 +239,9 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
             formatted_images = []
 
             for log in image_logs:
-                images = log["images"]
+                images = log["sr_image"]
                 validation_prompt = log["validation_prompt"]
-                validation_image = log["validation_image"]
+                validation_image = log["lq_image"]
 
                 formatted_images.append(wandb.Image(validation_image, caption="Controlnet conditioning"))
 
@@ -219,6 +254,7 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
             logger.warning(f"image logging not implemented for {tracker.name}")
 
         del pipeline
+        del eulera_scheduler
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -894,6 +930,7 @@ def prepare_control_image(
 ):
     # image = vae_image_processor.preprocess(image, height=height, width=width).to(dtype=torch.float32)
 
+
     image_batch_size = image.shape[0]
 
     if image_batch_size == 1:
@@ -1290,7 +1327,7 @@ def main(args):
         args
     )
     # print('Saving modality embeddings')
-    torch.save(modality_embeddings, "/home/heming/research/medical/ControlNetPlus/medical_data/modality_embeddings.pt")
+    torch.save(modality_embeddings, "/hpc2hdd/home/sfei285/Project/heming/ControlMIR/medical_data/modality_embeddings.pt")
     # exit()
     del text_encoders, tokenizers
     gc.collect()
@@ -1404,6 +1441,8 @@ def main(args):
                 # import pdb; pdb.set_trace()
                 control_image_list = [0, 0, 0, 0, 0, 0, batch["conditioning_pixel_values"], 0]  # Unnormalize and convert
                 
+                control_image_list = [0, 0, 0, 0, 0, 0, batch["conditioning_pixel_values"], 0]  # Unnormalize and convert
+                
                 # vae defined in line 1198
                 # vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
                 control_image_processor = VaeImageProcessor(
@@ -1411,6 +1450,31 @@ def main(args):
                 )
                 # image_processor = VaeImageProcessor(vae_scale_factor=vae.config.scaling_factor, do_convert_rgb=True)
                 
+
+                # batch_imgs = image_processor.preprocess(control_image_list, height=args.resolution, width=args.resolution).to(dtype=torch.float32)
+                for idx in range(len(control_image_list)):
+                    
+                    # TODO: need to conduct some check before prepare control image                            
+                    
+                    # check_image(image=batch_imgs[idx], prompt=batch["caption"], prompt_embeds=batch["prompt_embeds"])
+                    if type(control_image_list[idx]) is int and control_image_list[idx] == 0:
+                        continue
+                    else:
+                        # import pdb; pdb.set_trace()
+                        control_image = prepare_control_image(
+                                            image=control_image_list[idx],
+                                            vae_image_processor=control_image_processor,
+                                            width=args.resolution,
+                                            height=args.resolution,
+                                            batch_size=args.train_batch_size * 1,
+                                            num_images_per_prompt=1,
+                                            device=accelerator.device,
+                                            dtype=torch.float32,
+                                            do_classifier_free_guidance=False,
+                                            guess_mode=False,
+                                        )
+                        height, width = control_image.shape[-2:]
+                        control_image_list[idx] = control_image
 
                 # batch_imgs = image_processor.preprocess(control_image_list, height=args.resolution, width=args.resolution).to(dtype=torch.float32)
                 for idx in range(len(control_image_list)):
@@ -1483,9 +1547,12 @@ def main(args):
                     time_ids = batch["unet_added_conditions"]["time_ids"]
                     # control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=batch["prompt_embeds"].dtype).repeat(args.train_batch_size * 1 * 2, 1)
                     control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size, 1)
+                    control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size, 1)
                     # control_type = control_type.unsqueeze(0).repeat(args.train_batch_size, 1, 1)
                     
                     controlnet_added_cond_kwargs = {
+                        "text_embeds": text_embeds.squeeze(1).to(torch.float32),
+                        "time_ids": time_ids.squeeze(1).to(torch.float32),
                         "text_embeds": text_embeds.squeeze(1).to(torch.float32),
                         "time_ids": time_ids.squeeze(1).to(torch.float32),
                         "control_type": control_type
@@ -1502,6 +1569,7 @@ def main(args):
                         timesteps.squeeze(0).float(),
                         encoder_hidden_states=hidden_states.to(accelerator.device),
                         added_cond_kwargs=controlnet_added_cond_kwargs,
+                        controlnet_cond_list=control_image_list, # ! assuming batch_size=1 
                         controlnet_cond_list=control_image_list, # ! assuming batch_size=1 
                         return_dict=False,
                     )
@@ -1533,9 +1601,11 @@ def main(args):
                 added_cond_kwargs = {
                         "text_embeds": text_embeds.squeeze(1).to(accelerator.device, dtype=weight_dtype),
                         "time_ids": time_ids.squeeze(1).to(accelerator.device, dtype=weight_dtype),
+                        "text_embeds": text_embeds.squeeze(1).to(accelerator.device, dtype=weight_dtype),
+                        "time_ids": time_ids.squeeze(1).to(accelerator.device, dtype=weight_dtype),
                         "control_type": control_type
                     }
-                import pdb; pdb.set_trace()
+                # import pdb; pdb.set_trace()
                 model_pred = unet(
                     noisy_latents.to(accelerator.device, dtype=weight_dtype),
                     timesteps.squeeze(0).to(accelerator.device, dtype=weight_dtype),
@@ -1660,4 +1730,6 @@ def main(args):
 if __name__ == "__main__":
     args = parse_args()
     main(args)
+    
+
     
