@@ -32,7 +32,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from torchvision.transforms.functional import to_pil_image
+from torchvision import transforms
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -97,6 +97,7 @@ if is_torch_npu_available():
 def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step, is_final_validation=False):
     logger.info("Running validation... ")
     # validation image is LQ image
+    # TODO: turn the validation image and hq image into PIL image
     # TODO: turn the validation image and hq image into PIL image
     if not is_final_validation:
         controlnet = accelerator.unwrap_model(controlnet)
@@ -964,6 +965,7 @@ def prepare_control_image(
 ):
     # image = vae_image_processor.preprocess(image, height=height, width=width).to(dtype=torch.float32)
 
+
     image_batch_size = image.shape[0]
 
     if image_batch_size == 1:
@@ -1474,6 +1476,8 @@ def main(args):
                 # import pdb; pdb.set_trace()
                 control_image_list = [0, 0, 0, 0, 0, 0, batch["conditioning_pixel_values"], 0]  # Unnormalize and convert
                 
+                control_image_list = [0, 0, 0, 0, 0, 0, batch["conditioning_pixel_values"], 0]  # Unnormalize and convert
+                
                 # vae defined in line 1198
                 # vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
                 control_image_processor = VaeImageProcessor(
@@ -1481,6 +1485,31 @@ def main(args):
                 )
                 # image_processor = VaeImageProcessor(vae_scale_factor=vae.config.scaling_factor, do_convert_rgb=True)
                 
+
+                # batch_imgs = image_processor.preprocess(control_image_list, height=args.resolution, width=args.resolution).to(dtype=torch.float32)
+                for idx in range(len(control_image_list)):
+                    
+                    # TODO: need to conduct some check before prepare control image                            
+                    
+                    # check_image(image=batch_imgs[idx], prompt=batch["caption"], prompt_embeds=batch["prompt_embeds"])
+                    if type(control_image_list[idx]) is int and control_image_list[idx] == 0:
+                        continue
+                    else:
+                        # import pdb; pdb.set_trace()
+                        control_image = prepare_control_image(
+                                            image=control_image_list[idx],
+                                            vae_image_processor=control_image_processor,
+                                            width=args.resolution,
+                                            height=args.resolution,
+                                            batch_size=args.train_batch_size * 1,
+                                            num_images_per_prompt=1,
+                                            device=accelerator.device,
+                                            dtype=torch.float32,
+                                            do_classifier_free_guidance=False,
+                                            guess_mode=False,
+                                        )
+                        height, width = control_image.shape[-2:]
+                        control_image_list[idx] = control_image
 
                 # batch_imgs = image_processor.preprocess(control_image_list, height=args.resolution, width=args.resolution).to(dtype=torch.float32)
                 for idx in range(len(control_image_list)):
@@ -1553,9 +1582,12 @@ def main(args):
                     time_ids = batch["unet_added_conditions"]["time_ids"]
                     # control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=batch["prompt_embeds"].dtype).repeat(args.train_batch_size * 1 * 2, 1)
                     control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size, 1)
+                    control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size, 1)
                     # control_type = control_type.unsqueeze(0).repeat(args.train_batch_size, 1, 1)
                     
                     controlnet_added_cond_kwargs = {
+                        "text_embeds": text_embeds.squeeze(1).to(torch.float32),
+                        "time_ids": time_ids.squeeze(1).to(torch.float32),
                         "text_embeds": text_embeds.squeeze(1).to(torch.float32),
                         "time_ids": time_ids.squeeze(1).to(torch.float32),
                         "control_type": control_type
@@ -1565,14 +1597,14 @@ def main(args):
                     
                     # ! BUG: if cfg, repeat the controlnet_cond_list's image [resolved]
                     # Check dtype of ControlNet's parameters    
-                    # import pdb; pdb.set_trace()  
+                    import pdb; pdb.set_trace()  
                     # ! Now testing done, can pass controlnet
-                    
                     down_block_res_samples, mid_block_res_sample = controlnet(
                         noisy_latents,
                         timesteps.squeeze(0).float(),
                         encoder_hidden_states=hidden_states.to(accelerator.device),
                         added_cond_kwargs=controlnet_added_cond_kwargs,
+                        controlnet_cond_list=control_image_list, # ! assuming batch_size=1 
                         controlnet_cond_list=control_image_list, # ! assuming batch_size=1 
                         return_dict=False,
                     )
@@ -1602,6 +1634,8 @@ def main(args):
                 #         "control_type": control_type.squeeze(0).to(dtype=torch.float32).to(accelerator.device)
                 #     }
                 added_cond_kwargs = {
+                        "text_embeds": text_embeds.squeeze(1).to(accelerator.device, dtype=weight_dtype),
+                        "time_ids": time_ids.squeeze(1).to(accelerator.device, dtype=weight_dtype),
                         "text_embeds": text_embeds.squeeze(1).to(accelerator.device, dtype=weight_dtype),
                         "time_ids": time_ids.squeeze(1).to(accelerator.device, dtype=weight_dtype),
                         "control_type": control_type
@@ -1732,4 +1766,6 @@ def main(args):
 if __name__ == "__main__":
     args = parse_args()
     main(args)
+    
+
     
