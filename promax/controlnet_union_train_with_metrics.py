@@ -115,21 +115,20 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
             scheduler=eulera_scheduler,
         )
     else:
-        controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
-        if args.pretrained_vae_model_name_or_path is not None:
-            vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path, torch_dtype=weight_dtype)
-        else:
-            vae = AutoencoderKL.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="vae", torch_dtype=weight_dtype
-            )
-
+        controlnet = accelerator.unwrap_model(controlnet)
+        # controlnetplus' pipeline
+        eulera_scheduler = EulerAncestralDiscreteScheduler.from_pretrained(
+                            args.pretrained_model_name_or_path, 
+                            subfolder="scheduler",
+                            resume_download=True,
+                            max_retries=5
+                            )
         pipeline = StableDiffusionXLControlNetUnionImg2ImgPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
+            args.pretrained_model_name_or_path, controlnet=controlnet, 
             vae=vae,
-            controlnet=controlnet,
-            revision=args.revision,
-            variant=args.variant,
-            torch_dtype=weight_dtype,
+            torch_dtype=torch.float16,
+            # scheduler=ddim_scheduler,
+            scheduler=eulera_scheduler,
         )
         
 
@@ -215,11 +214,47 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
         image_logs.append(
             {"lq_image": validation_image, "hq_image": hq_image, "sr_image": images, "validation_prompt": validation_prompt, "ssim": sum(ssims)/len(ssims), "psnr": sum(psnrs)/len(psnrs), "rmse": sum(rmses)/len(rmses)}
         )
+    # log all image_logs and metrics into tensorboard
+    metrics = []
+    for log in image_logs:
+        metrics.append(log["ssim"])
+        metrics.append(log["psnr"])
+        metrics.append(log["rmse"])
+    # log metrics into tensorboard
+    for tracker in accelerator.trackers:
+        if tracker.name == "tensorboard":
+            # log all sr_image, lq_image, and validation_image into tensorboard
+            for log in image_logs:
+                sr_image = log["sr_image"][0]
+                # make sr_image a np array
+                sr_image = np.asarray(sr_image)
+                # make lq_image a np array
+                lq_image = np.asarray(log["lq_image"])
+                # make validation_image a np array
+                hq_image = np.asarray(log["hq_image"])
+                
+                validation_prompt = log["validation_prompt"]
+                validation_image = log["lq_image"]
+                # Log metrics
+                tracker.writer.add_scalar(validation_prompt + "_SSIM", log["ssim"], step)
+                tracker.writer.add_scalar(validation_prompt + "_PSNR", log["psnr"], step)
+                tracker.writer.add_scalar(validation_prompt + "_RMSE", log["rmse"], step)
+                
+                # Add images separately with descriptive captions
+                tracker.writer.add_image(validation_prompt + "_input_LQ", lq_image, step, dataformats="HWC")
+                tracker.writer.add_image(validation_prompt + "_target_HQ", hq_image, step, dataformats="HWC")
+                tracker.writer.add_image(validation_prompt + "_output_SR", sr_image, step, dataformats="HWC")
+                
+                # # Also log individual images
+                # tracker.writer.add_image(validation_prompt + "_input", lq_image, step, dataformats="HWC")
+                # tracker.writer.add_image(validation_prompt + "_target", hq_image, step, dataformats="HWC") 
+                # tracker.writer.add_image(validation_prompt + "_output", sr_image, step, dataformats="HWC")
 
     tracker_key = "test" if is_final_validation else "validation"
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
             for log in image_logs:
+                # import pdb; pdb.set_trace()
                 images = log["sr_image"]
                 validation_prompt = log["validation_prompt"]
                 validation_image = log["lq_image"]
@@ -233,7 +268,7 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
 
                 formatted_images = np.stack(formatted_images)
 
-                tracker.writer.add_images(validation_prompt, formatted_images, step, dataformats="NHWC")
+                tracker.writer.add_images(validation_prompt + "_comparison_lq_x1_sr_x4", formatted_images, step, dataformats="NHWC")
         elif tracker.name == "wandb":
             formatted_images = []
 
@@ -1663,18 +1698,19 @@ def main(args):
 
         # Run a final round of validation.
         # Setting `vae`, `unet`, and `controlnet` to None to load automatically from `args.output_dir`.
-        image_logs = None
-        if args.validation_prompt is not None:
-            image_logs = log_validation(
-                vae=None,
-                unet=None,
-                controlnet=None,
-                args=args,
-                accelerator=accelerator,
-                weight_dtype=weight_dtype,
-                step=global_step,
-                is_final_validation=True,
-            )
+        # TODO: rewrite final validation code in the future
+        # image_logs = None
+        # if args.validation_prompt is not None:
+        #     image_logs = log_validation(
+        #         vae=None,
+        #         unet=None,
+        #         controlnet=None,
+        #         args=args,
+        #         accelerator=accelerator,
+        #         weight_dtype=weight_dtype,
+        #         step=global_step,
+        #         is_final_validation=False,
+        #     )
 
         if args.push_to_hub:
             save_model_card(
