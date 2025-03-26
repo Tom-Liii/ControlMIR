@@ -6,3 +6,4 @@ evaluation/__pycache__/*
 medical_data/__pycache__/*
 models/__pycache__/*
 pipeline/__pycache__/*
+weather_output/*
