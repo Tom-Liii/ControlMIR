@@ -46,6 +46,7 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
 import glob
 
+
 import diffusers
 from diffusers import (
     AutoencoderKL,
@@ -78,6 +79,7 @@ from diffusers import EulerAncestralDiscreteScheduler
 from medical_data.WeatherDataUniform import Train_Data, Test_Data, Val_Data, DataSampler  # Replace with the class or function you need
 from medical_data.common import transformData, dataIO
 from evaluation.evaluation_metric import compute_measure
+from models.osediff_degrad_vae import initialize_vae
 from torch.utils.data import DataLoader 
 
 # controlnetplus related module
@@ -1161,8 +1163,10 @@ def main(args):
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
 
-    vae.requires_grad_(False)
-    unet.requires_grad_(False)
+    # vae.requires_grad_(False)
+    # unet.requires_grad_(False)
+    vae.train()
+    unet.train()
     text_encoder_one.requires_grad_(False)
     text_encoder_two.requires_grad_(False)
     controlnet.train()
@@ -1239,18 +1243,18 @@ def main(args):
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
     weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
+    # if accelerator.mixed_precision == "fp16":
+    #     weight_dtype = torch.float16
+    # elif accelerator.mixed_precision == "bf16":
+    #     weight_dtype = torch.bfloat16
 
     # Move vae, unet and text_encoder to device and cast to weight_dtype
     # The VAE is in float32 to avoid NaN losses.
     if args.pretrained_vae_model_name_or_path is not None:
-        vae.to(accelerator.device, dtype=weight_dtype)
+        vae.to(accelerator.device, dtype=torch.float32)
     else:
         vae.to(accelerator.device, dtype=torch.float32)
-    unet.to(accelerator.device, dtype=weight_dtype)
+    unet.to(accelerator.device, dtype=torch.float32)
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
     controlnet.to(accelerator.device, dtype=torch.float32)

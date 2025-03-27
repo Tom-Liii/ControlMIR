@@ -30,7 +30,41 @@ def compute_PSNR(img1, img2, data_range):
         mse_ = compute_MSE(img1, img2)
         return 10 * np.log10((data_range ** 2) / mse_)
 
-
+# def compute_SSIM(img1, img2, data_range, window_size=11, size_average=True):
+#     """
+#     Compute SSIM for inputs with shape [B, C, H, W] (supports multi-channel inputs)
+#     """
+#     # Automatically get channel count from input
+#     channel = img1.size(1)
+    
+#     # Handle 2D inputs (if needed)
+#     if len(img1.shape) == 2:
+#         img1 = img1.unsqueeze(0).unsqueeze(0)
+#         img2 = img2.unsqueeze(0).unsqueeze(0)
+    
+#     # Create window tensor once
+#     window = create_window(window_size, channel).to(img1.device).type_as(img1)
+    
+#     # Calculate means
+#     mu1 = F.conv2d(img1, window, padding=window_size//2, groups=channel)
+#     mu2 = F.conv2d(img2, window, padding=window_size//2, groups=channel)
+    
+#     # Calculate covariances
+#     mu1_sq = mu1.pow(2)
+#     mu2_sq = mu2.pow(2)
+#     mu1_mu2 = mu1 * mu2
+    
+#     sigma1_sq = F.conv2d(img1*img1, window, padding=window_size//2, groups=channel) - mu1_sq
+#     sigma2_sq = F.conv2d(img2*img2, window, padding=window_size//2, groups=channel) - mu2_sq
+#     sigma12 = F.conv2d(img1*img2, window, padding=window_size//2, groups=channel) - mu1_mu2
+    
+#     # SSIM constants
+#     C1 = (0.01 * data_range) ** 2
+#     C2 = (0.03 * data_range) ** 2
+    
+#     ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+    
+#     return ssim_map.mean() if size_average else ssim_map.mean(1).mean(1).mean(1)
 def compute_SSIM(img1, img2, data_range, window_size=11, channel=1, size_average=True):
     # referred from https://github.com/Po-Hsun-Su/pytorch-ssim
     if len(img1.size()) == 2:

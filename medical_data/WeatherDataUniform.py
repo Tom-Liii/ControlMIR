@@ -25,12 +25,28 @@ class Train_Data(Dataset):
         self.HQ_paths = [] 
         
         for modality in modality_list:
-            
-            tmp_paths = glob.glob(os.path.join(root_dir, "train", "input", "*.png")) 
-            
-            for p in tmp_paths:  
-                self.LQ_paths.append(p)
-                self.HQ_paths.append(p.replace("input", "target"))
+            if root_dir == "/hpc2hdd/home/sfei285/datasets/real_rain/RealRain-1k/RealRain-1k/RealRain-1k-H":
+                tmp_paths = glob.glob(os.path.join(root_dir, "train", "input", "*.png")) 
+                
+                for p in tmp_paths:  
+                    self.LQ_paths.append(p)
+                    self.HQ_paths.append(p.replace("input", "target"))
+            if root_dir == "/hpc2hdd/home/sfei285/datasets/real_rain/Real_Rain_Streaks_Dataset_CVPR19":
+                # go to "/hpc2hdd/home/sfei285/datasets/real_rain/Real_Rain_Streaks_Dataset_CVPR19/Training"
+                # look for real_world.txt
+                with open(os.path.join(root_dir, "Training", "real_world.txt"), "r") as f:
+                    for line in f:
+                        # split line by space, the first is LQ, the second is HQ
+                        if 'real_world/274' in line: 
+                            continue
+                        LQ_path, HQ_path = line.strip().split()
+
+                        # Remove leading slashes and normalize paths
+                        LQ_path = os.path.normpath(LQ_path.lstrip('/'))
+                        HQ_path = os.path.normpath(HQ_path.lstrip('/'))
+
+                        self.LQ_paths.append(os.path.join(root_dir, "Training", LQ_path))
+                        self.HQ_paths.append(os.path.join(root_dir, "Training", HQ_path))
 
         self.length = len(self.LQ_paths) 
         self.patch_size = patch_size
@@ -48,12 +64,12 @@ class Train_Data(Dataset):
         
         # Preprocessing transforms
         self.target_resolution = resolution
+        # resize could cause problem
         self.image_transforms = transforms.Compose(
             [
                 transforms.Resize(self.target_resolution, interpolation=transforms.InterpolationMode.BILINEAR),
                 transforms.CenterCrop(self.target_resolution),
                 transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
             ]
         )
 
@@ -62,7 +78,6 @@ class Train_Data(Dataset):
                 transforms.Resize(self.target_resolution, interpolation=transforms.InterpolationMode.BILINEAR),
                 transforms.CenterCrop(self.target_resolution),
                 transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
             ]
         )
         
@@ -124,7 +139,7 @@ class Train_Data(Dataset):
         item_dict = {"caption": class_label, "pixel_values": pixel_values, "conditioning_pixel_values": conditioning_pixel_values, "prompt_embeds": prompt_embeds, "unet_added_conditions": {"text_embeds": text_embeds, "time_ids": time_ids}}
         # print('item_dict', item_dict)
         # return imgLQ, imgHQ, class_label
-        # TODO: maybe can change class_label to certain text prompt
+        # TODO: replace lq with gt with a certain probability (50%) -> enhance the capture for degradation
         return item_dict
 
 

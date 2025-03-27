@@ -1543,7 +1543,6 @@ class StableDiffusionXLControlNetUnionImg2ImgPipeline(
                     added_cond_kwargs["image_embeds"] = image_embeds
 
                 # predict the noise residual
-                import pdb; pdb.set_trace()
                 noise_pred = self.unet(
                     latent_model_input,
                     t,

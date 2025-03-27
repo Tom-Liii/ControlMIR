@@ -32,7 +32,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from torchvision.transforms.functional import to_pil_image
+from torchvision import transforms
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -44,9 +44,6 @@ from PIL import Image
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
-
-# lora config
-# from peft import LoraConfig, get_peft_model
 
 import diffusers
 from diffusers import (
@@ -65,7 +62,6 @@ from diffusers.utils.import_utils import is_torch_npu_available, is_xformers_ava
 from diffusers.utils.torch_utils import is_compiled_module, randn_tensor
 
 
-
 # medical related module
 import sys
 import os
@@ -74,10 +70,13 @@ import os
 custom_module_path = os.path.abspath("/hpc2hdd/home/sfei285/Project/heming/ControlMIR")
 if custom_module_path not in sys.path:
     sys.path.append(custom_module_path)
+    
+from diffusers import EulerAncestralDiscreteScheduler
 
 # Now you can import the module
-from medical_data.MedicalDataUniform import Train_Data, Test_Data, DataSampler  # Replace with the class or function you need
+from medical_data.WeatherDataUniform import Train_Data, Test_Data, DataSampler  # Replace with the class or function you need
 from medical_data.common import transformData, dataIO
+from evaluation.evaluation_metric import compute_measure
 from torch.utils.data import DataLoader 
 
 # controlnetplus related module
@@ -97,17 +96,23 @@ if is_torch_npu_available():
 
 def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step, is_final_validation=False):
     logger.info("Running validation... ")
-
+    # validation image is LQ image
+    # TODO: turn the validation image and hq image into PIL image
     if not is_final_validation:
         controlnet = accelerator.unwrap_model(controlnet)
-        pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
+        # controlnetplus' pipeline
+        eulera_scheduler = EulerAncestralDiscreteScheduler.from_pretrained(
+                            args.pretrained_model_name_or_path, 
+                            subfolder="scheduler",
+                            resume_download=True,
+                            max_retries=5
+                            )
+        pipeline = StableDiffusionXLControlNetUnionImg2ImgPipeline.from_pretrained(
+            args.pretrained_model_name_or_path, controlnet=controlnet, 
             vae=vae,
-            unet=unet,
-            controlnet=controlnet,
-            revision=args.revision,
-            variant=args.variant,
-            torch_dtype=weight_dtype,
+            torch_dtype=torch.float16,
+            # scheduler=ddim_scheduler,
+            scheduler=eulera_scheduler,
         )
     else:
         controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
@@ -126,10 +131,16 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
             variant=args.variant,
             torch_dtype=weight_dtype,
         )
+        
 
     pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
+    
+    transform_totensor = transforms.Compose([
+        transforms.Grayscale(num_output_channels=1),
+        transforms.ToTensor()  # Converts to [C, H, W] and scales to [0.0, 1.0]
+    ])
 
     if args.enable_xformers_memory_efficient_attention:
         pipeline.enable_xformers_memory_efficient_attention()
@@ -152,6 +163,9 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
         raise ValueError(
             "number of `args.validation_image` and `args.validation_prompt` should be checked in `parse_args`"
         )
+        
+    # load hq image
+    hq_images = [path.replace("input", "target") for path in args.validation_image]
 
     image_logs = []
     if is_final_validation or torch.backends.mps.is_available():
@@ -159,48 +173,88 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
     else:
         autocast_ctx = torch.autocast(accelerator.device.type)
 
-    for validation_prompt, validation_image in zip(validation_prompts, validation_images):
+    for validation_prompt, validation_image, hq_image in zip(validation_prompts, validation_images, hq_images):
+        # validation_image is lq_image
+        validation_name = validation_image.split('/')[-1]
         validation_image = Image.open(validation_image).convert("RGB")
+        # validation_image = to_pil_image(validation_image)
         validation_image = validation_image.resize((args.resolution, args.resolution))
+        
+        hq_image = Image.open(hq_image).convert("RGB")
+        # hq_image = to_pil_image(hq_image)
+        hq_image = hq_image.resize((args.resolution, args.resolution))
+        # import pdb; pdb.set_trace()
 
         images = []
-
+        ssims = []
+        psnrs = []
+        rmses = []
         for _ in range(args.num_validation_images):
             with autocast_ctx:
-                image = pipeline(
-                    prompt=validation_prompt, image=validation_image, num_inference_steps=20, generator=generator
+                # image = pipeline(
+                #     prompt=validation_prompt, image=validation_image, num_inference_steps=20, generator=generator
+                # ).images[0]
+                image = pipeline(prompt=[validation_prompt]*1,
+                    image=validation_image, 
+                    control_image_list=[0, 0, 0, 0, 0, 0, validation_image, 0],
+                    negative_prompt=['bad anatomy, extra digit, fewer digits, cropped, worst quality, low quality']*1,
+                    generator=generator,
+                    width=args.resolution, 
+                    height=args.resolution,
+                    num_inference_steps=30,
+                    # crops_coords_top_left=(W, H),
+                    # target_size=(W, H),
+                    # original_size=(W * 2, H * 2),
+                    union_control=True,
+                    union_control_type=torch.Tensor([0, 0, 0, 0, 0, 0, 1, 0]),
                 ).images[0]
             images.append(image)
-
+            psnr, ssim, rmse = compute_measure(transform_totensor(hq_image), transform_totensor(image), data_range=1.0)
+            ssims.append(ssim)
+            psnrs.append(psnr)
+            rmses.append(rmse)
         image_logs.append(
-            {"validation_image": validation_image, "images": images, "validation_prompt": validation_prompt}
+            {"lq_image": validation_image, "hq_image": hq_image, "sr_image": images, "validation_prompt": validation_prompt, "ssim": sum(ssims)/len(ssims), "psnr": sum(psnrs)/len(psnrs), "rmse": sum(rmses)/len(rmses)}
         )
 
     tracker_key = "test" if is_final_validation else "validation"
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
             for log in image_logs:
-                images = log["images"]
+                images = log["sr_image"]
                 validation_prompt = log["validation_prompt"]
-                validation_image = log["validation_image"]
+                validation_image = log["lq_image"]
+                hq_image = log["hq_image"]
 
                 formatted_images = []
 
+                # Add LQ image
                 formatted_images.append(np.asarray(validation_image))
+                
+                # Add HQ image
+                formatted_images.append(np.asarray(hq_image))
 
+                # Add SR images
                 for image in images:
                     formatted_images.append(np.asarray(image))
 
                 formatted_images = np.stack(formatted_images)
 
-                tracker.writer.add_images(validation_prompt, formatted_images, step, dataformats="NHWC")
+                # Log images with a more descriptive caption
+                caption = f"{validation_name} (Adverse Weather -> Target -> Restored x4)"
+                tracker.writer.add_images(caption, formatted_images, step, dataformats="NHWC")
+                # add psnr, ssim, rmse
+                tracker.writer.add_scalar("psnr", sum(psnrs)/len(psnrs), step)
+                tracker.writer.add_scalar("ssim", sum(ssims)/len(ssims), step)
+                tracker.writer.add_scalar("rmse", sum(rmses)/len(rmses), step)
+                
         elif tracker.name == "wandb":
             formatted_images = []
 
             for log in image_logs:
-                images = log["images"]
+                images = log["sr_image"]
                 validation_prompt = log["validation_prompt"]
-                validation_image = log["validation_image"]
+                validation_image = log["lq_image"]
 
                 formatted_images.append(wandb.Image(validation_image, caption="Controlnet conditioning"))
 
@@ -213,6 +267,7 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step,
             logger.warning(f"image logging not implemented for {tracker.name}")
 
         del pipeline
+        del eulera_scheduler
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -592,6 +647,15 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--hq_image",
+        type=str,
+        default=None,
+        nargs="+",
+        help=(
+            "high quality image for computing metrics"
+        ),
+    )
+    parser.add_argument(
         "--num_validation_images",
         type=int,
         default=4,
@@ -877,9 +941,9 @@ def prepare_control_image(
     guess_mode=False,
     vae_image_processor=None,
 ):
-    # import pdb; pdb.set_trace()
     # image = vae_image_processor.preprocess(image, height=height, width=width).to(dtype=torch.float32)
-    image = image.unsqueeze(0)
+
+
     image_batch_size = image.shape[0]
 
     if image_batch_size == 1:
@@ -894,7 +958,6 @@ def prepare_control_image(
     
     if do_classifier_free_guidance and not guess_mode:
         image = torch.cat([image] * 2)
-    # import pdb; pdb.set_trace()
     return image
 
 
@@ -1189,7 +1252,7 @@ def main(args):
         
         for modality in modality_list:
             # Create prompt for this modality
-            prompt_batch = [f"{modality} medical image"]  # Adjust prompt format as needed
+            prompt_batch = [f"remove {modality}"]  # Adjust prompt format as needed
             
             # Compute embeddings
             prompt_embeds, pooled_prompt_embeds = encode_prompt(
@@ -1225,37 +1288,6 @@ def main(args):
             
         return modality_embeddings
 
-    def compute_embeddings(batch, proportion_empty_prompts, text_encoders, tokenizers, is_train=True):
-        original_size = (args.resolution, args.resolution)
-        target_size = (args.resolution, args.resolution)
-        crops_coords_top_left = (args.crops_coords_top_left_h, args.crops_coords_top_left_w)
-        prompt_batch = batch[args.caption_column]
-
-        prompt_embeds, pooled_prompt_embeds = encode_prompt(
-            prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train
-        )
-        add_text_embeds = pooled_prompt_embeds
-
-        # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
-        add_time_ids = list(original_size + crops_coords_top_left + target_size)
-        add_time_ids = torch.tensor([add_time_ids])
-
-        prompt_embeds = prompt_embeds.to(accelerator.device)
-        add_text_embeds = add_text_embeds.to(accelerator.device)
-        add_time_ids = add_time_ids.repeat(len(prompt_batch), 1)
-        add_time_ids = add_time_ids.to(accelerator.device, dtype=prompt_embeds.dtype)
-        unet_added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
-        # Print shapes and data types of embeddings
-        # print("Embeddings info:")
-        # print(f"prompt_embeds shape: {prompt_embeds.shape}, dtype: {prompt_embeds.dtype}")
-        # print(f"add_text_embeds shape: {add_text_embeds.shape}, dtype: {add_text_embeds.dtype}") 
-        # print(f"add_time_ids shape: {add_time_ids.shape}, dtype: {add_time_ids.dtype}")
-        # print("\nUNet added conditions:")
-        # for k,v in unet_added_cond_kwargs.items():
-        #     print(f"{k} shape: {v.shape}, dtype: {v.dtype}")
-        print(prompt_batch)
-        return {"prompt_embeds": prompt_embeds, **unet_added_cond_kwargs}
-
 
     # Let's first compute all the embeddings so that we can free up the text encoders
     # from memory.
@@ -1268,7 +1300,7 @@ def main(args):
     # print(f'Loading train dataset')
     # print(f'------------')
     data_root = args.train_data_dir
-    modality_list = ["PET", "CT", "MRI"] 
+    modality_list = ["rain"] 
     train_dataset, len_train_dataloader = build_train_sampler(modality_list, data_root, args.train_batch_size, shuffle=True, resolution=args.resolution)
     modality_embeddings = compute_embeddings_for_modalities(
         modality_list,
@@ -1389,10 +1421,8 @@ def main(args):
                 # ! preprocess control image list
                 # TODO: figure out the value of vae.config.block_out_channels
                 # import pdb; pdb.set_trace()
-                control_image_list = [
-                    [0, 0, 0, 0, 0, 0, batch_img, 0]  # Unnormalize and convert
-                    for batch_img in batch["conditioning_pixel_values"]
-                ]
+                control_image_list = [0, 0, 0, 0, 0, 0, batch["conditioning_pixel_values"], 0]  # Unnormalize and convert
+                                
                 # vae defined in line 1198
                 # vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
                 control_image_processor = VaeImageProcessor(
@@ -1400,31 +1430,56 @@ def main(args):
                 )
                 # image_processor = VaeImageProcessor(vae_scale_factor=vae.config.scaling_factor, do_convert_rgb=True)
                 
-                for batch_imgs in control_image_list:
-                    # batch_imgs = image_processor.preprocess(control_image_list, height=args.resolution, width=args.resolution).to(dtype=torch.float32)
-                    for idx in range(len(batch_imgs)):
-                        
-                        # TODO: need to conduct some check before prepare control image                            
-                        
-                        # check_image(image=batch_imgs[idx], prompt=batch["caption"], prompt_embeds=batch["prompt_embeds"])
-                        if type(batch_imgs[idx]) is int and batch_imgs[idx] == 0:
-                            continue
-                        else:
-                            # import pdb; pdb.set_trace()
-                            control_image = prepare_control_image(
-                                                image=batch_imgs[idx],
-                                                vae_image_processor=control_image_processor,
-                                                width=args.resolution,
-                                                height=args.resolution,
-                                                batch_size=args.train_batch_size * 1,
-                                                num_images_per_prompt=1,
-                                                device=accelerator.device,
-                                                dtype=torch.float32,
-                                                do_classifier_free_guidance=False,
-                                                guess_mode=False,
-                                            )
-                            height, width = control_image.shape[-2:]
-                            batch_imgs[idx] = control_image
+
+                # batch_imgs = image_processor.preprocess(control_image_list, height=args.resolution, width=args.resolution).to(dtype=torch.float32)
+                for idx in range(len(control_image_list)):
+                    
+                    # TODO: need to conduct some check before prepare control image                            
+                    
+                    # check_image(image=batch_imgs[idx], prompt=batch["caption"], prompt_embeds=batch["prompt_embeds"])
+                    if type(control_image_list[idx]) is int and control_image_list[idx] == 0:
+                        continue
+                    else:
+                        # import pdb; pdb.set_trace()
+                        control_image = prepare_control_image(
+                                            image=control_image_list[idx],
+                                            vae_image_processor=control_image_processor,
+                                            width=args.resolution,
+                                            height=args.resolution,
+                                            batch_size=args.train_batch_size * 1,
+                                            num_images_per_prompt=1,
+                                            device=accelerator.device,
+                                            dtype=torch.float32,
+                                            do_classifier_free_guidance=False,
+                                            guess_mode=False,
+                                        )
+                        height, width = control_image.shape[-2:]
+                        control_image_list[idx] = control_image
+
+                # batch_imgs = image_processor.preprocess(control_image_list, height=args.resolution, width=args.resolution).to(dtype=torch.float32)
+                for idx in range(len(control_image_list)):
+                    
+                    # TODO: need to conduct some check before prepare control image                            
+                    
+                    # check_image(image=batch_imgs[idx], prompt=batch["caption"], prompt_embeds=batch["prompt_embeds"])
+                    if type(control_image_list[idx]) is int and control_image_list[idx] == 0:
+                        continue
+                    else:
+                        # import pdb; pdb.set_trace()
+                        control_image = prepare_control_image(
+                                            image=control_image_list[idx],
+                                            vae_image_processor=control_image_processor,
+                                            width=args.resolution,
+                                            height=args.resolution,
+                                            batch_size=args.train_batch_size * 1,
+                                            num_images_per_prompt=1,
+                                            device=accelerator.device,
+                                            dtype=torch.float32,
+                                            do_classifier_free_guidance=False,
+                                            guess_mode=False,
+                                        )
+                        height, width = control_image.shape[-2:]
+                        control_image_list[idx] = control_image
                 # Convert images to latent space
                 if args.pretrained_vae_model_name_or_path is not None:
                     pixel_values = batch["pixel_values"].to(device=accelerator.device, dtype=weight_dtype)
@@ -1471,25 +1526,28 @@ def main(args):
                     text_embeds = batch["unet_added_conditions"]["text_embeds"]
                     time_ids = batch["unet_added_conditions"]["time_ids"]
                     # control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=batch["prompt_embeds"].dtype).repeat(args.train_batch_size * 1 * 2, 1)
-                    control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(1, 1)
+                    # control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size, 1)
+                    control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size, 1)
                     # control_type = control_type.unsqueeze(0).repeat(args.train_batch_size, 1, 1)
                     
                     controlnet_added_cond_kwargs = {
-                        "text_embeds": text_embeds.to(torch.float32),
-                        "time_ids": time_ids.to(torch.float32),
+                        "text_embeds": text_embeds.squeeze(1).to(torch.float32),
+                        "time_ids": time_ids.squeeze(1).to(torch.float32),
                         "control_type": control_type
                     }
                     # import pdb; pdb.set_trace()
                     hidden_states = batch["prompt_embeds"].to(accelerator.device).repeat(1, 1, 1, 1).squeeze(1).float()
                     
                     # ! BUG: if cfg, repeat the controlnet_cond_list's image [resolved]
-                    # Check dtype of ControlNet's parameters      
+                    # Check dtype of ControlNet's parameters    
+                    # import pdb; pdb.set_trace()  
+                    # ! Now testing done, can pass controlnet
                     down_block_res_samples, mid_block_res_sample = controlnet(
                         noisy_latents,
                         timesteps.squeeze(0).float(),
                         encoder_hidden_states=hidden_states.to(accelerator.device),
                         added_cond_kwargs=controlnet_added_cond_kwargs,
-                        controlnet_cond_list=control_image_list[0], # ! assuming batch_size=1 
+                        controlnet_cond_list=control_image_list, # ! assuming batch_size=1 
                         return_dict=False,
                     )
                 else:
@@ -1518,10 +1576,11 @@ def main(args):
                 #         "control_type": control_type.squeeze(0).to(dtype=torch.float32).to(accelerator.device)
                 #     }
                 added_cond_kwargs = {
-                        "text_embeds": text_embeds.squeeze(0).to(accelerator.device, dtype=weight_dtype),
-                        "time_ids": time_ids.squeeze(0).to(accelerator.device, dtype=weight_dtype),
+                        "text_embeds": text_embeds.squeeze(1).to(accelerator.device, dtype=weight_dtype),
+                        "time_ids": time_ids.squeeze(1).to(accelerator.device, dtype=weight_dtype),
                         "control_type": control_type
                     }
+                # import pdb; pdb.set_trace()
                 model_pred = unet(
                     noisy_latents.to(accelerator.device, dtype=weight_dtype),
                     timesteps.squeeze(0).to(accelerator.device, dtype=weight_dtype),
@@ -1545,7 +1604,11 @@ def main(args):
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
                 # import pdb; pdb.set_trace()
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                loss_l1 = F.l1_loss(model_pred.float(), target.float(), reduction="mean")
+                loss_mse = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                lambda_l1 = 0.5
+                
+                loss = loss_mse + lambda_l1 * loss_l1
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
@@ -1646,3 +1709,6 @@ def main(args):
 if __name__ == "__main__":
     args = parse_args()
     main(args)
+    
+
+    

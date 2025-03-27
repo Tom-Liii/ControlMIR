@@ -52,6 +52,8 @@ class VAE_decode(nn.Module):
         _vae.decoder.incoming_skip_acts = _vae.encoder.current_down_blocks
         x_decoded = (_vae.decode((x / _vae.config.scaling_factor)).sample).clamp(-1, 1)
         return x_decoded
+    
+
 
 def my_vae_encoder_fwd(self, sample):
     sample = self.conv_in(sample)
@@ -74,6 +76,8 @@ def my_vae_encoder_fwd(self, sample):
     sample = self.conv_out(sample)
     self.current_down_blocks = l_blocks
     return sample
+
+
 
 def my_vae_decoder_fwd(self, sample, latent_embeds=None):
     #sample.shape torch.Size([1, 4, 32, 32])
@@ -143,7 +147,8 @@ def initialize_vae(args):
     vae.decoder.skip_conv_4 = torch.nn.Conv2d(128, 256, kernel_size=(1, 1), stride=(1, 1), bias=False)
     vae.decoder.ignore_skip = False
     # vae_lora_config = LoraConfig(r=args.lora_rank, init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
-    vae_lora_config = LoraConfig(r=2, init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
+    # add lora part to optimizer
+    vae_lora_config = LoraConfig(r=128, init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
     vae = get_peft_model(vae, vae_lora_config)
     vae.add_adapter(adapter_name="vae_skip", peft_config=vae_lora_config)
     vae.decoder.gamma = 1

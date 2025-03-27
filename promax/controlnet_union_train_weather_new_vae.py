@@ -1353,9 +1353,25 @@ def main(args):
         optimizer_class = torch.optim.AdamW
 
     # Optimizer creation
-    params_to_optimize = controlnet.parameters()
+    # TODO: add vae_enc and vae_dec to optimizer
+    for name, param in vae_enc.named_parameters():
+            if 'lora' in name or 'adapter' in name or 'skip_conv' in name or 'conv_out' in name:
+                param.requires_grad = True
+                print("Trainable:", name)
+            else:
+                param.requires_grad = False
+    for name, param in vae_dec.named_parameters():
+            if 'lora' in name or 'adapter' in name or 'skip_conv' in name or 'conv_out' in name:
+                param.requires_grad = True
+                print("Trainable:", name)
+            else:
+                param.requires_grad = False
+    # params_to_optimize = list(controlnet.parameters()) + list(vae_enc.parameters()) + list(vae_dec.parameters())
+    generator_layers_to_opt = list(filter(lambda p: p.requires_grad, vae_enc.parameters()))
+    generator_layers_to_opt.extend(list(filter(lambda p: p.requires_grad, vae_dec.parameters())))
+    
     optimizer = optimizer_class(
-        params_to_optimize,
+        generator_layers_to_opt,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -1382,11 +1398,11 @@ def main(args):
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
     controlnet.to(accelerator.device, dtype=torch.float32)
-    skip_conv_out = nn.Sequential(
-            nn.Conv2d(3,3,kernel_size=3,stride=1,padding=3//2),
-            nn.ReLU(),
-            nn.Conv2d(3,3,kernel_size=3,stride=1,padding=3//2)
-        ).to(accelerator.device, dtype=torch.float32)
+    # skip_conv_out = nn.Sequential(
+    #         nn.Conv2d(3,3,kernel_size=3,stride=1,padding=3//2),
+    #         nn.ReLU(),
+    #         nn.Conv2d(3,3,kernel_size=3,stride=1,padding=3//2)
+    #     ).to(accelerator.device, dtype=torch.float32)
 
     # Here, we compute not just the text embeddings but also the additional embeddings
     # needed for the SD XL UNet to operate.
@@ -1573,92 +1589,97 @@ def main(args):
                 lq_values = batch["conditioning_pixel_values"].to(accelerator.device, dtype=torch.float32)
                 
                 # vae encoder
-                latents = vae_enc(lq_values, direction="a2b")
-                noise = torch.randn_like(latents)
-                bsz = latents.shape[0]
+                latents = vae_enc(pixel_values, direction="a2b")
+                # noise = torch.randn_like(latents)
+                # bsz = latents.shape[0]
 
-                # Sample a random timestep for each image
-                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
-                timesteps = timesteps.long()
+                # # Sample a random timestep for each image
+                # timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+                # timesteps = timesteps.long()
 
-                latent_model_input = latents 
-                noisy_latents = noise_scheduler.add_noise(latent_model_input.float(), noise.float(), timesteps).to(
-                    dtype=torch.float32
-                )
+                # latent_model_input = latents 
+                # noisy_latents = noise_scheduler.add_noise(latent_model_input.float(), noise.float(), timesteps).to(
+                #     dtype=torch.float32
+                # )
                 # BUG: might be due to wrong calculation of latents
 
                 
                 # will enter this if whening training our controlnet for medical image restoration
-                union_control_type=torch.Tensor([0, 0, 0, 0, 0, 0, 1, 0]) # control type for super resolution
-                text_embeds = batch["unet_added_conditions"]["text_embeds"]
-                time_ids = batch["unet_added_conditions"]["time_ids"]
+                # union_control_type=torch.Tensor([0, 0, 0, 0, 0, 0, 1, 0]) # control type for super resolution
+                # text_embeds = batch["unet_added_conditions"]["text_embeds"]
+                # time_ids = batch["unet_added_conditions"]["time_ids"]
                 # control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=batch["prompt_embeds"].dtype).repeat(args.train_batch_size * 1 * 2, 1)
                 # control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size, 1)
-                control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size, 1)
+                # control_type = union_control_type.reshape(1, -1).to(accelerator.device, dtype=torch.float32).repeat(args.train_batch_size, 1)
                 # control_type = control_type.unsqueeze(0).repeat(args.train_batch_size, 1, 1)
                 
-                controlnet_added_cond_kwargs = {
-                    "text_embeds": text_embeds.squeeze(1).to(torch.float32),
-                    "time_ids": time_ids.squeeze(1).to(torch.float32),
-                    "control_type": control_type
-                }
-                # import pdb; pdb.set_trace()
-                hidden_states = batch["prompt_embeds"].to(accelerator.device).repeat(1, 1, 1, 1).squeeze(1).float()
+                # controlnet_added_cond_kwargs = {
+                #     "text_embeds": text_embeds.squeeze(1).to(torch.float32),
+                #     "time_ids": time_ids.squeeze(1).to(torch.float32),
+                #     "control_type": control_type
+                # }
+                # # import pdb; pdb.set_trace()
+                # hidden_states = batch["prompt_embeds"].to(accelerator.device).repeat(1, 1, 1, 1).squeeze(1).float()
                 
                 # ! BUG: if cfg, repeat the controlnet_cond_list's image [resolved]
                 # Check dtype of ControlNet's parameters    
                 # import pdb; pdb.set_trace()  
                 # ! Now testing done, can pass controlnet
-                down_block_res_samples, mid_block_res_sample = controlnet(
-                    noisy_latents,
-                    timesteps.squeeze(0).float(),
-                    encoder_hidden_states=hidden_states.to(accelerator.device),
-                    added_cond_kwargs=controlnet_added_cond_kwargs,
-                    controlnet_cond_list=control_image_list, # ! assuming batch_size=1 
-                    return_dict=False,
-                )
+                # down_block_res_samples, mid_block_res_sample = controlnet(
+                #     noisy_latents,
+                #     timesteps.squeeze(0).float(),
+                #     encoder_hidden_states=hidden_states.to(accelerator.device),
+                #     added_cond_kwargs=controlnet_added_cond_kwargs,
+                #     controlnet_cond_list=control_image_list, # ! assuming batch_size=1 
+                #     return_dict=False,
+                # )
                 
 
                 # Predict the noise residual
                 # import pdb; pdb.set_trace()
-                added_cond_kwargs = {
-                        "text_embeds": text_embeds.squeeze(1).to(accelerator.device, dtype=weight_dtype),
-                        "time_ids": time_ids.squeeze(1).to(accelerator.device, dtype=weight_dtype),
-                        "control_type": control_type
-                    }
+                # added_cond_kwargs = {
+                #         "text_embeds": text_embeds.squeeze(1).to(accelerator.device, dtype=weight_dtype),
+                #         "time_ids": time_ids.squeeze(1).to(accelerator.device, dtype=weight_dtype),
+                #         "control_type": control_type
+                #     }
                 # import pdb; pdb.set_trace()
-                model_pred = unet(
-                    noisy_latents.to(accelerator.device, dtype=weight_dtype),
-                    timesteps[0].to(accelerator.device, dtype=weight_dtype),
-                    encoder_hidden_states=hidden_states.to(accelerator.device, dtype=weight_dtype),
-                    added_cond_kwargs=added_cond_kwargs,
-                    down_block_additional_residuals=[
-                        res.to(accelerator.device, dtype=weight_dtype)
-                        for res in down_block_res_samples
-                    ],
-                    mid_block_additional_residual=mid_block_res_sample.to(
-                        accelerator.device, dtype=weight_dtype
-                    ),
-                    return_dict=False,
-                )[0].to(dtype=torch.float32)
+                # model_pred = unet(
+                #     noisy_latents.to(accelerator.device, dtype=weight_dtype),
+                #     timesteps[0].to(accelerator.device, dtype=weight_dtype),
+                #     encoder_hidden_states=hidden_states.to(accelerator.device, dtype=weight_dtype),
+                #     added_cond_kwargs=added_cond_kwargs,
+                #     down_block_additional_residuals=[
+                #         res.to(accelerator.device, dtype=weight_dtype)
+                #         for res in down_block_res_samples
+                #     ],
+                #     mid_block_additional_residual=mid_block_res_sample.to(
+                #         accelerator.device, dtype=weight_dtype
+                #     ),
+                #     return_dict=False,
+                # )[0].to(dtype=torch.float32)
                 
                 target = pixel_values
-
-                x_denoised = noise_scheduler.step(model_pred.to(accelerator.device, dtype=torch.float32), timesteps[0].to(accelerator.device), noisy_latents.to(accelerator.device, dtype=torch.float32), return_dict=True).prev_sample
-                output_image = vae_dec(x_denoised.to(accelerator.device, dtype=torch.float32), direction="a2b") + skip_conv_out(batch["conditioning_pixel_values"].to(accelerator.device, dtype=torch.float32))
-                # TODO: handle normalization
-
-                output_image = TF.normalize(output_image, mean=[0.5], std=[0.5])
-                output_image = output_image.clamp(-1, 1)
-                target = TF.normalize(target, mean=[0.5], std=[0.5])
-                target = target.clamp(-1, 1)
+                x_denoised = latents
+                # x_denoised = noise_scheduler.step(model_pred.to(accelerator.device, dtype=torch.float32), timesteps[0].to(accelerator.device), noisy_latents.to(accelerator.device, dtype=torch.float32), return_dict=True).prev_sample
+                output_image = vae_dec(x_denoised.to(accelerator.device, dtype=torch.float32), direction="a2b") 
+                
+                # output_image = TF.normalize(output_image, mean=[0.5], std=[0.5])
+                # output_image = output_image.clamp(-1, 1)
+                # target = TF.normalize(target, mean=[0.5], std=[0.5])
+                # target = target.clamp(-1, 1)
+                def compute_psnr(output_image, target, max_val=1.0):
+                    mse = F.mse_loss(output_image.float(), target.float(), reduction="mean")
+                    if mse == 0:  # Avoid division by zero
+                        return float('inf')
+                    psnr = 10 * math.log10((max_val ** 2) / mse.item())
+                    return psnr
                 
                 loss_l1 = F.l1_loss(output_image.float(), target.float(), reduction="mean")
                 loss_mse = F.mse_loss(output_image.float(), target.float(), reduction="mean")
-                lambda_l1 = 0.5
+                psnr = compute_psnr(output_image, target)
                 
-                loss = loss_mse # + lambda_l1 * loss_l1
-
+                loss = loss_mse + loss_l1
+                logger.info(f"PSNR: {psnr}")
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     params_to_clip = controlnet.parameters()
@@ -1719,7 +1740,7 @@ def main(args):
                                         weight_dtype=torch.float32
                                     )
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0], "psnr": psnr}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 

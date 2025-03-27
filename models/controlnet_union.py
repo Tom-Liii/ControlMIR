@@ -889,7 +889,6 @@ class ControlNetModel_Union(ModelMixin, ConfigMixin, FromSingleFileMixin):
 
             inputs.append(feat_seq.unsqueeze(1))
             condition_list.append(controlnet_cond)
-
         x = torch.cat(inputs, dim=1)  # NxLxC
         x = self.transformer_layes(x)
 
