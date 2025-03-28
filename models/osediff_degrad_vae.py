@@ -34,6 +34,13 @@ class VAE_encode(nn.Module):
         else:
             _vae = self.vae_b2a
         return _vae.encode(x).latent_dist.sample() * _vae.config.scaling_factor
+    
+    def save_model(self, outf, step):
+        sd = {}
+        sd["state_dict_trainable_params"] = {name: param for name, param in self.named_parameters() if param.requires_grad}
+        torch.save(sd, os.path.join(outf, f"vae_enc_state_dict.pth"))
+        
+
 
 
 class VAE_decode(nn.Module):
@@ -52,7 +59,12 @@ class VAE_decode(nn.Module):
         _vae.decoder.incoming_skip_acts = _vae.encoder.current_down_blocks
         x_decoded = (_vae.decode((x / _vae.config.scaling_factor)).sample).clamp(-1, 1)
         return x_decoded
-    
+
+    def save_model(self, outf, step):
+        sd = {}
+        sd["state_dict_trainable_params"] = {name: param for name, param in self.named_parameters() if param.requires_grad}
+        torch.save(sd, os.path.join(outf, f"vae_dec_state_dict.pth"))
+        
 
 
 def my_vae_encoder_fwd(self, sample):
@@ -135,27 +147,63 @@ def my_vae_decoder_fwd(self, sample, latent_embeds=None):
     # sample.shape torch.Size([1, 3, 256, 256])
     return sample
 
-def initialize_vae(args):
-    vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae")
+def initialize_vae(args, checkpoint_path=None):
+    if checkpoint_path is None:
+        vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae")
 
-    sd = torch.load('/hpc2hdd/home/sfei285/Project/real-derain/weights/day2night.pkl')
-    vae.encoder.forward = my_vae_encoder_fwd.__get__(vae.encoder, vae.encoder.__class__)
-    vae.decoder.forward = my_vae_decoder_fwd.__get__(vae.decoder, vae.decoder.__class__)
-    vae.decoder.skip_conv_1 = torch.nn.Conv2d(512, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
-    vae.decoder.skip_conv_2 = torch.nn.Conv2d(256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
-    vae.decoder.skip_conv_3 = torch.nn.Conv2d(128, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
-    vae.decoder.skip_conv_4 = torch.nn.Conv2d(128, 256, kernel_size=(1, 1), stride=(1, 1), bias=False)
-    vae.decoder.ignore_skip = False
-    # vae_lora_config = LoraConfig(r=args.lora_rank, init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
-    # add lora part to optimizer
-    vae_lora_config = LoraConfig(r=128, init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
-    vae = get_peft_model(vae, vae_lora_config)
-    vae.add_adapter(adapter_name="vae_skip", peft_config=vae_lora_config)
-    vae.decoder.gamma = 1
-    vae_b2a = copy.deepcopy(vae)
-    vae_enc = VAE_encode(vae, vae_b2a=vae_b2a)
-    vae_dec = VAE_decode(vae, vae_b2a=vae_b2a)
-    return vae_enc, vae_dec
+        sd = torch.load('/hpc2hdd/home/sfei285/Project/real-derain/weights/day2night.pkl')
+        vae.encoder.forward = my_vae_encoder_fwd.__get__(vae.encoder, vae.encoder.__class__)
+        vae.decoder.forward = my_vae_decoder_fwd.__get__(vae.decoder, vae.decoder.__class__)
+        vae.decoder.skip_conv_1 = torch.nn.Conv2d(512, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        vae.decoder.skip_conv_2 = torch.nn.Conv2d(256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        vae.decoder.skip_conv_3 = torch.nn.Conv2d(128, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        vae.decoder.skip_conv_4 = torch.nn.Conv2d(128, 256, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        vae.decoder.ignore_skip = False
+        # vae_lora_config = LoraConfig(r=args.lora_rank, init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
+        # add lora part to optimizer
+        vae_lora_config = LoraConfig(r=128, init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
+        vae = get_peft_model(vae, vae_lora_config)
+        vae.add_adapter(adapter_name="vae_skip", peft_config=vae_lora_config)
+        vae.decoder.gamma = 1
+        vae_b2a = copy.deepcopy(vae)
+        vae_enc = VAE_encode(vae, vae_b2a=vae_b2a)
+        vae_dec = VAE_decode(vae, vae_b2a=vae_b2a)
+        return vae_enc, vae_dec
+    else: 
+        vae_enc_path = os.path.join(checkpoint_path, "vae_enc_state_dict.pth")
+        vae_dec_path = os.path.join(checkpoint_path, "vae_dec_state_dict.pth")
+        vae_enc_model = torch.load(vae_enc_path)
+        vae_dec_model = torch.load(vae_dec_path)
+        vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae")
+
+        sd = torch.load('/hpc2hdd/home/sfei285/Project/real-derain/weights/day2night.pkl')
+        vae.encoder.forward = my_vae_encoder_fwd.__get__(vae.encoder, vae.encoder.__class__)
+        vae.decoder.forward = my_vae_decoder_fwd.__get__(vae.decoder, vae.decoder.__class__)
+        vae.decoder.skip_conv_1 = torch.nn.Conv2d(512, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        vae.decoder.skip_conv_2 = torch.nn.Conv2d(256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        vae.decoder.skip_conv_3 = torch.nn.Conv2d(128, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        vae.decoder.skip_conv_4 = torch.nn.Conv2d(128, 256, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        vae.decoder.ignore_skip = False
+        # vae_lora_config = LoraConfig(r=args.lora_rank, init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
+        # add lora part to optimizer
+        vae_lora_config = LoraConfig(r=128, init_lora_weights="gaussian", target_modules=sd["vae_lora_target_modules"])
+        vae = get_peft_model(vae, vae_lora_config)
+        vae.add_adapter(adapter_name="vae_skip", peft_config=vae_lora_config)
+        vae.decoder.gamma = 1
+        
+                
+        vae_b2a = copy.deepcopy(vae)
+        vae_enc = VAE_encode(vae, vae_b2a=vae_b2a)
+        vae_dec = VAE_decode(vae, vae_b2a=vae_b2a)
+        for name, param in vae_enc_model["state_dict_trainable_params"].items():
+            if name in vae_enc.state_dict():
+                vae_enc.state_dict()[name].copy_(param)
+                print("loaded:", name)
+        for name, param in vae_dec_model["state_dict_trainable_params"].items():
+            if name in vae_dec.state_dict():
+                vae_dec.state_dict()[name].copy_(param)
+                print("loaded:", name)
+        return vae_enc, vae_dec
 
 
 def initialize_unet(args, return_lora_module_names=False, pretrained_model_name_or_path=None):

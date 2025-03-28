@@ -1189,8 +1189,10 @@ def main(args):
     #     revision=args.revision,
     #     variant=args.variant,
     # )
-    
-    vae_enc, vae_dec = initialize_vae(args)
+    if not args.resume_from_checkpoint:
+        vae_enc, vae_dec = initialize_vae(args)
+    else:
+        vae_enc, vae_dec = initialize_vae(args, args.resume_from_checkpoint)
 
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
@@ -1367,6 +1369,7 @@ def main(args):
             else:
                 param.requires_grad = False
     # params_to_optimize = list(controlnet.parameters()) + list(vae_enc.parameters()) + list(vae_dec.parameters())
+    
     generator_layers_to_opt = list(filter(lambda p: p.requires_grad, vae_enc.parameters()))
     generator_layers_to_opt.extend(list(filter(lambda p: p.requires_grad, vae_dec.parameters())))
     
@@ -1377,7 +1380,9 @@ def main(args):
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
-
+    if args.resume_from_checkpoint:
+        optimizer_model = torch.load(os.path.join(args.resume_from_checkpoint, "optimizer_state_dict.pth"))
+        optimizer.load_state_dict(optimizer_model)
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
     weight_dtype = torch.float32
@@ -1495,7 +1500,9 @@ def main(args):
         num_cycles=args.lr_num_cycles,
         power=args.lr_power,
     )
-
+    if args.resume_from_checkpoint:
+        lr_scheduler_model = torch.load(os.path.join(args.resume_from_checkpoint, "lr_scheduler_state_dict.pth"))
+        lr_scheduler.load_state_dict(lr_scheduler_model)
     # Prepare everything with our `accelerator`.
     controlnet, optimizer, train_dataset, lr_scheduler, val_dataset = accelerator.prepare(
         controlnet, optimizer, train_dataset, lr_scheduler, val_dataset
@@ -1540,32 +1547,32 @@ def main(args):
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
-    if args.resume_from_checkpoint:
-        if args.resume_from_checkpoint != "latest":
-            path = os.path.basename(args.resume_from_checkpoint)
-        else:
-            # Get the most recent checkpoint
-            dirs = os.listdir(args.output_dir)
-            dirs = [d for d in dirs if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-            path = dirs[-1] if len(dirs) > 0 else None
+    # if args.resume_from_checkpoint:
+    #     if args.resume_from_checkpoint != "latest":
+    #         path = os.path.basename(args.resume_from_checkpoint)
+    #     else:
+    #         # Get the most recent checkpoint
+    #         dirs = os.listdir(args.output_dir)
+    #         dirs = [d for d in dirs if d.startswith("checkpoint")]
+    #         dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
+    #         path = dirs[-1] if len(dirs) > 0 else None
 
-        if path is None:
-            accelerator.print(
-                f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
-            )
-            args.resume_from_checkpoint = None
-            initial_global_step = 0
-        else:
-            accelerator.print(f"Resuming from checkpoint {path}")
-            accelerator.load_state(os.path.join(args.output_dir, path))
-            global_step = int(path.split("-")[1])
+    #     if path is None:
+    #         accelerator.print(
+    #             f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
+    #         )
+    #         args.resume_from_checkpoint = None
+    #         initial_global_step = 0
+    #     else:
+    #         accelerator.print(f"Resuming from checkpoint {path}")
+    #         accelerator.load_state(os.path.join(args.output_dir, path))
+    #         global_step = int(path.split("-")[1])
 
-            initial_global_step = global_step
-            first_epoch = global_step // num_update_steps_per_epoch
-    else:
-        initial_global_step = 0
-
+    #         initial_global_step = global_step
+    #         first_epoch = global_step // num_update_steps_per_epoch
+    # else:
+    #     initial_global_step = 0
+    initial_global_step = 0
     progress_bar = tqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
@@ -1577,7 +1584,8 @@ def main(args):
     image_logs = None
     # NIMA
     # nima_metric = pyiqa.create_metric('nima').to(accelerator.device)
-    
+    best_psnr = 0
+    best_step = 0
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataset):
             with accelerator.accumulate(controlnet):
@@ -1677,9 +1685,12 @@ def main(args):
                 loss_l1 = F.l1_loss(output_image.float(), target.float(), reduction="mean")
                 loss_mse = F.mse_loss(output_image.float(), target.float(), reduction="mean")
                 psnr = compute_psnr(output_image, target)
+                if psnr > best_psnr:
+                    best_psnr = psnr
+                    best_step = global_step
                 
                 loss = loss_mse + loss_l1
-                logger.info(f"PSNR: {psnr}")
+                # logger.info(f"PSNR: {psnr}")
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     params_to_clip = controlnet.parameters()
@@ -1717,8 +1728,29 @@ def main(args):
                                     shutil.rmtree(removing_checkpoint)
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path}")
+                        # make dir
+                        os.makedirs(save_path, exist_ok=True)
+                        # accelerator.save_state(save_path)
+                        # logger.info(f"Saved state to {save_path}")
+                        
+                        # checkpoint_dict = {
+                        #             'global_step': global_step,
+                        #             'step': step,
+                        #             'vae_enc_state_dict': accelerator.unwrap_model(vae_enc).state_dict(),
+                        #             'vae_dec_state_dict': accelerator.unwrap_model(vae_dec).state_dict(),
+                        #             'optimizer_state_dict': optimizer.state_dict(),
+                        #             'lr_scheduler_state_dict': lr_scheduler.state_dict(),
+                        #             'best_psnr': best_psnr,
+                        #             'best_step': best_step,
+                        #         }
+                        # checkpoint_path = os.path.join(save_path, f"checkpoint_{global_step}.pth")
+                        # torch.save(checkpoint_dict, checkpoint_path)
+                        vae_enc.save_model(save_path, global_step)
+                        vae_dec.save_model(save_path, global_step)
+                        # save optimizer and lr_scheduler
+                        torch.save(optimizer.state_dict(), os.path.join(save_path, f"optimizer_state_dict.pth"))
+                        torch.save(lr_scheduler.state_dict(), os.path.join(save_path, f"lr_scheduler_state_dict.pth"))
+                        logger.info(f"Saved state to {save_path}, best psnr: {best_psnr}, best step: {best_step}")
 
                     if args.validation_prompt is not None and global_step % args.validation_steps == 0:
                         for tracker in accelerator.trackers:
